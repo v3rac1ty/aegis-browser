@@ -7,3 +7,23 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+wry.workspace = true
+
+[target.'cfg(target_os = "windows")'.dependencies]
+webview2-com.workspace = true
+windows.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2.workspace = true
+objc2-foundation.workspace = true
+objc2-web-kit.workspace = true
+block2.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk.workspace = true
+webkit2gtk-sys.workspace = true
+glib.workspace = true
+glib-sys.workspace = true
+gio-sys.workspace = true

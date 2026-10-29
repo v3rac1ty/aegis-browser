@@ -7,3 +7,11 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+aegis-engine = { path = "../aegis-engine" }
+aegis-ffi = { path = "../aegis-ffi" }
+eframe.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk.workspace = true

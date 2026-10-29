@@ -8,6 +8,22 @@ edition = "2024"
 rust-version = "1.99"
 publish = false
 
+[workspace.dependencies]
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts", "accesskit", "x11", "wayland"] }
+wry = { version = "0.57.1", default-features = false, features = ["os-webview", "x11"] }
+gtk = "=0.18.2"
+webview2-com = "=0.39.1"
+windows = { version = "=0.62.2", features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_System_Com", "Win32_Foundation"] }
+objc2 = "=0.6.5"
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSError", "NSString"] }
+objc2-web-kit = { version = "=0.3.2", default-features = false, features = ["std", "block2", "WKContentRuleList", "WKContentRuleListStore", "WKUserContentController"] }
+block2 = "=0.6.2"
+webkit2gtk = "=2.0.2"
+webkit2gtk-sys = "=2.0.2"
+glib = "=0.18.5"
+glib-sys = "=0.18.1"
+gio-sys = "=0.18.1"
+
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 missing_debug_implementations = "warn"

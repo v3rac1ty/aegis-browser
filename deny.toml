@@ -11,6 +11,13 @@ targets = [
 [advisories]
 yanked = "deny"
 unmaintained = "all"
+ignore = [
+    { id = "RUSTSEC-2024-0370", reason = "unmaintained transitive dependency with no upgrade, Linux only; revisit when wry moves to GTK4" },
+    { id = "RUSTSEC-2026-0370", reason = "unmaintained transitive dependency with no upgrade, Linux only; revisit when accesskit updates" },
+    { id = "RUSTSEC-2026-0371", reason = "unmaintained transitive dependency with no upgrade, Linux only; revisit when accesskit updates" },
+    { id = "RUSTSEC-2026-0372", reason = "unmaintained transitive dependency with no upgrade, Linux only; revisit when accesskit updates" },
+    { id = "RUSTSEC-2024-0429", reason = "glib 0.18 is pinned by wry's GTK3 stack, Linux only; we never use VariantStrIter; revisit when wry moves to GTK4" },
+]
 
 [licenses]
 unused-allowed-license = "allow"
@@ -26,6 +33,10 @@ allow = [
     "MPL-2.0",
 ]
 confidence-threshold = 0.9
+
+[[licenses.exceptions]]
+name = "epaint_default_fonts"
+allow = ["OFL-1.1", "Ubuntu-font-1.0"]
 
 [licenses.private]
 ignore = true
