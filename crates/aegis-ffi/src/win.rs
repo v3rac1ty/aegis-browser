@@ -6,7 +6,7 @@ use webview2_com::{
 };
 use windows::Win32::System::Com::IStream;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, VK_CONTROL, VK_F5, VK_L, VK_LEFT, VK_LWIN, VK_MENU, VK_R, VK_RIGHT, VK_RWIN,
+    GetKeyState, VK_CONTROL, VK_F5, VK_L, VK_LEFT, VK_LWIN, VK_MENU, VK_R, VK_RIGHT, VK_RWIN, VK_S,
     VK_SHIFT, VK_T, VK_TAB, VK_W,
 };
 use windows::core::{Interface, PWSTR, w};
@@ -167,6 +167,7 @@ pub(super) fn install_shortcuts(
             (key, true, false, false) if key == u32::from(VK_L.0) => Shortcut::CommandBar,
             (key, true, false, false) if key == u32::from(VK_T.0) => Shortcut::NewTab,
             (key, true, false, false) if key == u32::from(VK_W.0) => Shortcut::CloseTab,
+            (key, true, false, true) if key == u32::from(VK_S.0) => Shortcut::ToggleCompact,
             (key, true, false, false) if key == u32::from(VK_TAB.0) => Shortcut::NextTab,
             (key, true, false, true) if key == u32::from(VK_TAB.0) => Shortcut::PrevTab,
             (key, true, false, false) if key == u32::from(VK_R.0) => Shortcut::Reload,
@@ -187,16 +188,17 @@ pub(super) fn install_shortcuts(
     Ok(())
 }
 
-pub(super) fn go_back(webview: &WebView) -> Result<(), FfiError> {
+pub(super) fn go_back(webview: &WebView) -> Result<bool, FfiError> {
     let core = webview.webview();
     let mut can_go_back = windows::core::BOOL::default();
     // SAFETY: the interface belongs to this live webview and the output pointer is valid.
     unsafe { core.CanGoBack(&mut can_go_back) }.map_err(native_error)?;
-    if can_go_back.as_bool() {
-        // SAFETY: the interface belongs to this live webview and history permits navigation.
-        unsafe { core.GoBack() }.map_err(native_error)?;
+    if !can_go_back.as_bool() {
+        return Ok(false);
     }
-    Ok(())
+    // SAFETY: the interface belongs to this live webview and history permits navigation.
+    unsafe { core.GoBack() }.map_err(native_error)?;
+    Ok(true)
 }
 
 pub(super) fn go_forward(webview: &WebView) -> Result<(), FfiError> {

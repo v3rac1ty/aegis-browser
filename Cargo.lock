@@ -126,6 +126,7 @@ dependencies = [
  "aegis-ipc",
  "eframe",
  "gtk",
+ "winit",
 ]
 
 [[package]]

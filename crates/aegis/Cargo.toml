@@ -17,3 +17,4 @@ eframe.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk.workspace = true
+winit.workspace = true

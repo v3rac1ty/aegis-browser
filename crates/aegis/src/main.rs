@@ -5,6 +5,7 @@
 mod app;
 mod command_bar;
 mod compact;
+mod matcher;
 mod paths;
 mod persist;
 mod sidebar;
@@ -119,7 +120,7 @@ fn main() -> Result<(), StartupError> {
 
     #[cfg(target_os = "linux")]
     let options = {
-        use eframe::egui_glow::egui_winit::winit::platform::x11::EventLoopBuilderExtX11 as _;
+        use winit::platform::x11::EventLoopBuilderExtX11 as _;
 
         let mut options = options;
         options.event_loop_builder = Some(Box::new(|builder| {

@@ -1,6 +1,8 @@
 //! the only crate allowed to use unsafe for native platform APIs
 
 mod content_rules;
+#[cfg_attr(target_os = "windows", allow(dead_code))]
+mod shortcut_keys;
 
 use std::fmt;
 use wry::WebView;
@@ -30,6 +32,7 @@ pub enum Shortcut {
     Reload,
     Back,
     Forward,
+    ToggleCompact,
 }
 
 /// error from a native hook
@@ -80,8 +83,8 @@ pub fn install_shortcuts(
     platform::install_shortcuts(webview, on_shortcut)
 }
 
-/// navigate backward when history permits
-pub fn go_back(webview: &WebView) -> Result<(), FfiError> {
+/// returns whether backward navigation started
+pub fn go_back(webview: &WebView) -> Result<bool, FfiError> {
     platform::go_back(webview)
 }
 

@@ -239,6 +239,7 @@ impl Views {
                             url: url.into_string(),
                             placement: Placement::AfterActive,
                             activate: true,
+                            opener: Some(tab),
                         });
                     }
                 }

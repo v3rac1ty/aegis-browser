@@ -6,7 +6,7 @@ use aegis_engine::{Engine, Start};
 use aegis_ffi::Shortcut;
 use eframe::egui;
 
-use crate::command_bar::{self, CommandBar, Mode};
+use crate::command_bar::{self, BarAction, CommandBar, Mode, SuggestionAction};
 use crate::compact::Compact;
 use crate::persist::SessionSaver;
 use crate::sidebar::{Action, Sidebar};
@@ -83,11 +83,16 @@ impl AegisApp {
         };
         let mut initial = Vec::new();
         if missing {
-            initial.push(Command::OpenTab {
-                url: "https://duckduckgo.com".to_owned(),
-                placement: Placement::End,
-                activate: true,
-            });
+            if let Ok(url) = aegis_ipc::page_url(command_bar::search_engine_home_url(
+                browser.settings().search_engine,
+            )) {
+                initial.push(Command::OpenTab {
+                    url: url.into_string(),
+                    placement: Placement::End,
+                    activate: true,
+                    opener: None,
+                });
+            }
         } else if let Some(tab) = browser.active_tab() {
             initial.push(Command::ActivateTab(tab));
         }
@@ -105,6 +110,7 @@ impl AegisApp {
                     url: url.into_string(),
                     placement: Placement::AfterActive,
                     activate: true,
+                    opener: None,
                 });
             }
         }
@@ -179,10 +185,33 @@ impl AegisApp {
         }
     }
 
+    fn go_back(&mut self, frame: &eframe::Frame, ctx: &egui::Context) {
+        let Some(tab) = self.browser.active_tab() else {
+            return;
+        };
+        let Some(view) = self.views.active(&self.browser) else {
+            return;
+        };
+        match view.go_back() {
+            Ok(true) => {}
+            Ok(false) => {
+                let Some(opener) = self.browser.tab(tab).and_then(|tab| tab.opener()) else {
+                    return;
+                };
+                if self.browser.tab(opener).is_none() {
+                    return;
+                }
+                self.apply(Command::CloseTab(tab), frame, ctx);
+                self.apply(Command::ActivateTab(opener), frame, ctx);
+            }
+            Err(error) => self.notice = Some(error.to_string()),
+        }
+    }
+
     fn handle_shortcut(&mut self, shortcut: Shortcut, frame: &eframe::Frame, ctx: &egui::Context) {
         match shortcut {
-            Shortcut::CommandBar => self.command_bar.open(Mode::CurrentTab),
-            Shortcut::NewTab => self.command_bar.open(Mode::NewTab),
+            Shortcut::CommandBar => self.open_bar(Mode::CurrentTab),
+            Shortcut::NewTab => self.open_bar(Mode::NewTab),
             Shortcut::CloseTab => {
                 if let Some(tab) = self.browser.active_tab() {
                     self.apply(Command::CloseTab(tab), frame, ctx);
@@ -212,13 +241,7 @@ impl AegisApp {
                     self.notice = Some(error.to_string());
                 }
             }
-            Shortcut::Back => {
-                if let Some(view) = self.views.active(&self.browser)
-                    && let Err(error) = view.go_back()
-                {
-                    self.notice = Some(error.to_string());
-                }
-            }
+            Shortcut::Back => self.go_back(frame, ctx),
             Shortcut::Forward => {
                 if let Some(view) = self.views.active(&self.browser)
                     && let Err(error) = view.go_forward()
@@ -226,7 +249,21 @@ impl AegisApp {
                     self.notice = Some(error.to_string());
                 }
             }
+            Shortcut::ToggleCompact => self.action(
+                Action::SetCompact(!self.browser.settings().compact),
+                frame,
+                ctx,
+            ),
         }
+    }
+
+    fn open_bar(&mut self, mode: Mode) {
+        let active_url = self
+            .browser
+            .active_tab()
+            .and_then(|id| self.browser.tab(id))
+            .map(|tab| tab.url());
+        self.command_bar.open(mode, active_url);
     }
 
     fn keyboard(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
@@ -244,6 +281,9 @@ impl AegisApp {
             }
             if command && input.key_pressed(egui::Key::W) {
                 keys.push(Shortcut::CloseTab);
+            }
+            if command && shift && input.key_pressed(egui::Key::S) {
+                keys.push(Shortcut::ToggleCompact);
             }
             if ctrl && input.key_pressed(egui::Key::Tab) {
                 keys.push(if shift {
@@ -286,8 +326,8 @@ impl AegisApp {
                 self.apply(Command::MoveTab { tab, to }, frame, ctx);
             }
             Action::Command(command) => self.apply(command, frame, ctx),
-            Action::OpenBar(mode) => self.command_bar.open(mode),
-            Action::Back => self.handle_shortcut(Shortcut::Back, frame, ctx),
+            Action::OpenBar(mode) => self.open_bar(mode),
+            Action::Back => self.go_back(frame, ctx),
             Action::Forward => self.handle_shortcut(Shortcut::Forward, frame, ctx),
             Action::Reload => self.handle_shortcut(Shortcut::Reload, frame, ctx),
             Action::Stop => {
@@ -305,17 +345,25 @@ impl AegisApp {
         }
     }
 
-    fn open_input(&mut self, mode: Mode, input: &str, frame: &eframe::Frame, ctx: &egui::Context) {
-        if input.trim().is_empty() {
+    fn run_bar_action(&mut self, action: BarAction, frame: &eframe::Frame, ctx: &egui::Context) {
+        let BarAction {
+            mode,
+            suggestion,
+            force_new_tab,
+        } = action;
+        let SuggestionAction::Open(url) = suggestion else {
+            if let SuggestionAction::ActivateTab(tab) = suggestion {
+                self.apply(Command::ActivateTab(tab), frame, ctx);
+            }
             return;
-        }
-        let url = command_bar::classify_input(input, self.browser.settings().search_engine);
-        match mode {
+        };
+        match if force_new_tab { Mode::NewTab } else { mode } {
             Mode::NewTab => self.apply(
                 Command::OpenTab {
                     url,
                     placement: Placement::AfterActive,
                     activate: true,
+                    opener: None,
                 },
                 frame,
                 ctx,
@@ -329,6 +377,7 @@ impl AegisApp {
                             url,
                             placement: Placement::End,
                             activate: true,
+                            opener: None,
                         },
                         frame,
                         ctx,
@@ -437,8 +486,8 @@ impl eframe::App for AegisApp {
                     self.notice.as_deref(),
                 ));
             }
-            if let Some((mode, input)) = self.command_bar.show(&ctx, content, window) {
-                self.open_input(mode, &input, frame, &ctx);
+            if let Some(action) = self.command_bar.show(&ctx, content, window, &self.browser) {
+                self.run_bar_action(action, frame, &ctx);
             }
         }
         for action in actions {

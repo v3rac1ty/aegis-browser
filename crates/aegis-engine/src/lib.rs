@@ -273,10 +273,9 @@ impl ContentView {
         Ok(())
     }
 
-    /// navigate backward when history permits
-    pub fn go_back(&self) -> Result<(), EngineError> {
-        aegis_ffi::go_back(&self.webview)?;
-        Ok(())
+    /// returns whether backward navigation started
+    pub fn go_back(&self) -> Result<bool, EngineError> {
+        Ok(aegis_ffi::go_back(&self.webview)?)
     }
 
     /// navigate forward when history permits

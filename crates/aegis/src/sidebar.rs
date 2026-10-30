@@ -1,7 +1,9 @@
-use aegis_core::{Browser, Command, Group, GroupColor, GroupId, Item, Location, TabId};
+use aegis_core::{
+    Browser, Command, Group, GroupColor, GroupId, Item, Location, SearchEngine, TabId,
+};
 use eframe::egui::{self, Color32, FontId, Sense, Stroke, StrokeKind};
 
-use crate::command_bar::Mode;
+use crate::command_bar::{self, Mode};
 use crate::theme::{self, Palette};
 
 pub enum Action {
@@ -104,6 +106,7 @@ enum Menu {
 pub struct Sidebar {
     menu: Option<Menu>,
     rename: Option<(GroupId, String)>,
+    settings_open: bool,
 }
 
 impl Sidebar {
@@ -111,6 +114,7 @@ impl Sidebar {
         Self {
             menu: None,
             rename: None,
+            settings_open: false,
         }
     }
 
@@ -183,21 +187,20 @@ impl Sidebar {
                 );
             });
         ui.add_space(8.0);
-        ui.label(
-            egui::RichText::new(workspace.name())
-                .size(11.0)
-                .color(palette.secondary),
-        );
-        if ui
-            .small_button(if browser.settings().compact {
-                "Exit compact mode"
-            } else {
-                "Compact mode"
-            })
-            .clicked()
-        {
-            actions.push(Action::SetCompact(!browser.settings().compact));
-        }
+        let mut gear_rect = egui::Rect::NOTHING;
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(workspace.name())
+                    .size(11.0)
+                    .color(palette.secondary),
+            );
+            ui.add_space((ui.available_width() - 28.0).max(0.0));
+            let gear = ui.add_sized([24.0, 24.0], egui::Button::new("⚙").frame(false));
+            gear_rect = gear.rect;
+            if gear.clicked() {
+                self.settings_open = !self.settings_open;
+            }
+        });
         if let Some(notice) = notice {
             ui.horizontal(|ui| {
                 ui.label(
@@ -211,7 +214,73 @@ impl Sidebar {
             });
         }
         self.menu(ui, browser, palette, &mut actions);
+        self.settings(ui, browser, palette, gear_rect, &mut actions);
         actions
+    }
+
+    fn settings(
+        &mut self,
+        ui: &egui::Ui,
+        browser: &Browser,
+        palette: Palette,
+        gear_rect: egui::Rect,
+        actions: &mut Vec<Action>,
+    ) {
+        if !self.settings_open {
+            return;
+        }
+        let sidebar = ui.max_rect();
+        let width = 220.0_f32.min(sidebar.width() - 8.0);
+        let x = (gear_rect.right() - width).max(sidebar.left() + 4.0);
+        let y = (gear_rect.top() - 246.0).max(sidebar.top() + 4.0);
+        let response = egui::Area::new(egui::Id::unique("sidebar_settings"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(egui::pos2(x, y))
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style())
+                    .fill(palette.background)
+                    .show(ui, |ui| {
+                        ui.set_width(width - 16.0);
+                        ui.label(egui::RichText::new("Search engine").size(12.0).strong());
+                        let current = browser.settings().search_engine;
+                        for engine in [
+                            SearchEngine::DuckDuckGo,
+                            SearchEngine::Brave,
+                            SearchEngine::Startpage,
+                            SearchEngine::Google,
+                            SearchEngine::Bing,
+                        ] {
+                            if ui
+                                .radio(current == engine, command_bar::search_engine_name(engine))
+                                .clicked()
+                            {
+                                let mut settings = browser.settings().clone();
+                                settings.search_engine = engine;
+                                actions.push(Action::Command(Command::SetSettings(settings)));
+                            }
+                        }
+                        ui.separator();
+                        let mut compact = browser.settings().compact;
+                        if ui.checkbox(&mut compact, "Compact mode").changed() {
+                            actions.push(Action::SetCompact(compact));
+                        }
+                        ui.label(
+                            egui::RichText::new("Hide sidebar until hovered")
+                                .size(10.0)
+                                .color(palette.secondary),
+                        );
+                    });
+            });
+        let close = ui.input(|input| {
+            input.key_pressed(egui::Key::Escape)
+                || (input.pointer.any_pressed()
+                    && input.pointer.interact_pos().is_some_and(|pos| {
+                        !response.response.rect.contains(pos) && !gear_rect.contains(pos)
+                    }))
+        });
+        if close {
+            self.settings_open = false;
+        }
     }
 
     fn top_bar(
@@ -227,7 +296,7 @@ impl Sidebar {
             let back_enabled = browser
                 .active_tab()
                 .and_then(|id| browser.tab(id))
-                .is_some_and(|tab| tab.history().len() > 1);
+                .is_some_and(|tab| tab.history().len() > 1 || tab.opener().is_some());
             let view_enabled = browser.active_tab().is_some();
             if ui
                 .add_enabled_ui(back_enabled, |ui| {

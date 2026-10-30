@@ -2,8 +2,10 @@ use std::ffi::{CStr, CString};
 use std::os::unix::ffi::OsStrExt;
 use std::ptr;
 
+use super::shortcut_keys::{Key, Mods, Platform, match_shortcut};
 use super::{BlockRules, FfiError, Shortcut, SuspendOutcome, content_rules};
 use glib::translate::ToGlibPtr;
+use gtk::gdk;
 use gtk::prelude::WidgetExt;
 use webkit2gtk::{UserContentManager, WebViewExt};
 use wry::{WebView, WebViewExtUnix};
@@ -129,16 +131,50 @@ pub(super) fn set_background_memory(_webview: &WebView, _low: bool) -> Result<()
 }
 
 pub(super) fn install_shortcuts(
-    _webview: &WebView,
-    _on_shortcut: Box<dyn Fn(Shortcut)>,
+    webview: &WebView,
+    on_shortcut: Box<dyn Fn(Shortcut)>,
 ) -> Result<(), FfiError> {
-    // the app menu owns Linux shortcuts in M4
+    webview.webview().connect_key_press_event(move |_, event| {
+        let state = event.state() & !(gdk::ModifierType::LOCK_MASK | gdk::ModifierType::MOD2_MASK);
+        let allowed = gdk::ModifierType::CONTROL_MASK
+            | gdk::ModifierType::SHIFT_MASK
+            | gdk::ModifierType::MOD1_MASK;
+        if !(state & !allowed).is_empty() {
+            return glib::Propagation::Proceed;
+        }
+        let mods = Mods {
+            ctrl: state.contains(gdk::ModifierType::CONTROL_MASK),
+            shift: state.contains(gdk::ModifierType::SHIFT_MASK),
+            alt: state.contains(gdk::ModifierType::MOD1_MASK),
+            command: false,
+        };
+        let key = match event.keyval().to_lower() {
+            gdk::keys::constants::l => Key::L,
+            gdk::keys::constants::t => Key::T,
+            gdk::keys::constants::w => Key::W,
+            gdk::keys::constants::r => Key::R,
+            gdk::keys::constants::s => Key::S,
+            gdk::keys::constants::Tab | gdk::keys::constants::ISO_Left_Tab => Key::Tab,
+            gdk::keys::constants::F5 => Key::F5,
+            gdk::keys::constants::Left => Key::Left,
+            gdk::keys::constants::Right => Key::Right,
+            _ => return glib::Propagation::Proceed,
+        };
+        let Some(shortcut) = match_shortcut(key, mods, Platform::Linux) else {
+            return glib::Propagation::Proceed;
+        };
+        on_shortcut(shortcut);
+        glib::Propagation::Stop
+    });
     Ok(())
 }
 
-pub(super) fn go_back(webview: &WebView) -> Result<(), FfiError> {
+pub(super) fn go_back(webview: &WebView) -> Result<bool, FfiError> {
+    if !webview.webview().can_go_back() {
+        return Ok(false);
+    }
     webview.webview().go_back();
-    Ok(())
+    Ok(true)
 }
 
 pub(super) fn go_forward(webview: &WebView) -> Result<(), FfiError> {

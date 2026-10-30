@@ -35,6 +35,7 @@ pub enum Command {
         url: String,
         placement: Placement,
         activate: bool,
+        opener: Option<TabId>,
     },
     /// close a tab
     CloseTab(TabId),
@@ -202,7 +203,8 @@ impl Browser {
                 url,
                 placement,
                 activate,
-            } => self.open_tab(url, placement, activate, now_ms, effects),
+                opener,
+            } => self.open_tab(url, placement, activate, opener, now_ms, effects),
             Command::CloseTab(id) => self.close_tab(id, now_ms, effects),
             Command::ActivateTab(id) => self.activate_tab(id, now_ms, effects),
             Command::Navigate { tab, url } => self.navigate(tab, url, effects),
@@ -255,10 +257,16 @@ impl Browser {
         url: String,
         placement: Placement,
         activate: bool,
+        opener: Option<TabId>,
         now_ms: u64,
         effects: &mut Vec<Effect>,
     ) -> Result<(), CommandError> {
         check_url(&url)?;
+        if let Some(opener) = opener
+            && !self.tabs.contains_key(&opener)
+        {
+            return Err(CommandError::UnknownTab);
+        }
         let workspace_index = self
             .workspace_index(self.active_workspace)
             .ok_or(CommandError::UnknownWorkspace)?;
@@ -272,6 +280,7 @@ impl Browser {
             id,
             Tab {
                 id,
+                opener,
                 url: url.clone(),
                 title: String::new(),
                 last_active_ms: 0,
@@ -313,6 +322,7 @@ impl Browser {
         };
         remove_placement(&mut self.workspaces[workspace_index], id, false);
         let tab = self.tabs.remove(&id).ok_or(CommandError::UnknownTab)?;
+        self.clear_openers(&[id]);
         if matches!(tab.load, LoadState::Live | LoadState::Suspended) {
             effects.push(Effect::DestroyView(id));
         }
@@ -584,6 +594,7 @@ impl Browser {
             .active_tab
             .filter(|tab| group.tabs.contains(tab));
         let fallback = active_tab.and_then(|tab| next_survivor(&order, tab, &group.tabs));
+        self.clear_openers(&group.tabs);
         for id in group.tabs {
             if let Some(tab) = self.tabs.remove(&id)
                 && matches!(tab.load, LoadState::Live | LoadState::Suspended)
@@ -657,6 +668,7 @@ impl Browser {
         }
         let was_active = id == self.active_workspace;
         let tabs = self.visual_order(id);
+        self.clear_openers(&tabs);
         for tab_id in tabs {
             if let Some(tab) = self.tabs.remove(&tab_id)
                 && matches!(tab.load, LoadState::Live | LoadState::Suspended)
@@ -672,6 +684,14 @@ impl Browser {
             }
         }
         Ok(())
+    }
+
+    fn clear_openers(&mut self, closed: &[TabId]) {
+        for tab in self.tabs.values_mut() {
+            if tab.opener.is_some_and(|opener| closed.contains(&opener)) {
+                tab.opener = None;
+            }
+        }
     }
 
     fn show_tab(&self, id: TabId, effects: &mut Vec<Effect>) {
@@ -805,6 +825,7 @@ mod tests {
                     url: url.into(),
                     placement: Placement::End,
                     activate,
+                    opener: None,
                 },
                 10,
             )
@@ -813,6 +834,94 @@ mod tests {
             .visual_order(browser.active_workspace())
             .last()
             .unwrap()
+    }
+
+    fn open_with_opener(browser: &mut Browser, opener: TabId) -> TabId {
+        browser
+            .apply(
+                Command::OpenTab {
+                    url: "https://popup.test".into(),
+                    placement: Placement::End,
+                    activate: false,
+                    opener: Some(opener),
+                },
+                11,
+            )
+            .unwrap();
+        *browser
+            .visual_order(browser.active_workspace())
+            .last()
+            .unwrap()
+    }
+
+    #[test]
+    fn opener_is_stored_and_cleared_when_closed() {
+        let mut browser = Browser::new();
+        let opener = open(&mut browser, "https://source.test", true);
+        let popup = open_with_opener(&mut browser, opener);
+        assert_eq!(browser.tab(popup).unwrap().opener(), Some(opener));
+
+        browser.apply(Command::CloseTab(opener), 12).unwrap();
+        assert_eq!(browser.tab(popup).unwrap().opener(), None);
+        assert_eq!(browser.check_invariants(), Ok(()));
+    }
+
+    #[test]
+    fn unknown_opener_leaves_state_unchanged() {
+        let mut browser = Browser::new();
+        failed(
+            &mut browser,
+            Command::OpenTab {
+                url: "https://popup.test".into(),
+                placement: Placement::End,
+                activate: true,
+                opener: Some(TabId(999)),
+            },
+            CommandError::UnknownTab,
+        );
+    }
+
+    #[test]
+    fn closing_group_clears_external_openers() {
+        let mut browser = Browser::new();
+        let opener = open(&mut browser, "https://source.test", true);
+        let popup = open_with_opener(&mut browser, opener);
+        let effects = browser
+            .apply(
+                Command::CreateGroup {
+                    tabs: vec![opener],
+                    name: "source".into(),
+                    color: GroupColor::Blue,
+                },
+                12,
+            )
+            .unwrap();
+        let group = group_id(&effects);
+        browser.apply(Command::CloseGroup(group), 13).unwrap();
+        assert_eq!(browser.tab(popup).unwrap().opener(), None);
+        assert_eq!(browser.check_invariants(), Ok(()));
+    }
+
+    #[test]
+    fn removing_workspace_clears_external_openers() {
+        let mut browser = Browser::new();
+        let opener = open(&mut browser, "https://source.test", true);
+        let effects = browser
+            .apply(
+                Command::AddWorkspace {
+                    name: "second".into(),
+                    color: GroupColor::Blue,
+                },
+                12,
+            )
+            .unwrap();
+        let second = workspace_id(&effects);
+        browser.apply(Command::SwitchWorkspace(second), 13).unwrap();
+        let popup = open_with_opener(&mut browser, opener);
+        let first = browser.workspaces()[0].id();
+        browser.apply(Command::RemoveWorkspace(first), 14).unwrap();
+        assert_eq!(browser.tab(popup).unwrap().opener(), None);
+        assert_eq!(browser.check_invariants(), Ok(()));
     }
 
     fn failed(browser: &mut Browser, command: Command, error: CommandError) {
@@ -866,6 +975,7 @@ mod tests {
                     url: too_long.clone(),
                     placement: Placement::End,
                     activate: true,
+                    opener: None,
                 },
                 CommandError::UrlTooLong,
             ),
@@ -1101,6 +1211,7 @@ mod tests {
                 url: "x".repeat(8193),
                 placement: Placement::End,
                 activate: true,
+                opener: None,
             },
             CommandError::UrlTooLong,
         );
@@ -1518,6 +1629,7 @@ mod tests {
                 url: "x".into(),
                 placement: Placement::InGroup(GroupId(999)),
                 activate: false,
+                opener: None,
             },
             CommandError::UnknownGroup,
         );
@@ -1739,6 +1851,7 @@ mod tests {
                     url: "x".into(),
                     placement: Placement::End,
                     activate: false,
+                    opener: None,
                 },
                 1,
             )
@@ -1772,16 +1885,19 @@ mod tests {
                         url: format!("https://{seed}/{step}"),
                         placement: Placement::End,
                         activate: true,
+                        opener: (step % 2 == 0).then_some(tab),
                     },
                     1 => Command::OpenTab {
                         url: format!("https://{seed}/{step}"),
                         placement: Placement::AfterActive,
                         activate: false,
+                        opener: browser.active_tab(),
                     },
                     2 => Command::OpenTab {
                         url: "x".into(),
                         placement: Placement::InGroup(group),
                         activate: false,
+                        opener: None,
                     },
                     3 => Command::CloseTab(tab),
                     4 => Command::ActivateTab(tab),

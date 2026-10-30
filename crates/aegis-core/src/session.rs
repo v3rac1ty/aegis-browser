@@ -218,6 +218,7 @@ mod tests {
                     url: "https://example.com".into(),
                     placement: Placement::End,
                     activate: true,
+                    opener: None,
                 },
                 4,
             )
@@ -230,6 +231,54 @@ mod tests {
             loaded.browser.tab(id).unwrap().load(),
             crate::LoadState::Unloaded
         );
+        assert_eq!(loaded.browser.check_invariants(), Ok(()));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn opener_survives_round_trip_and_old_sessions_default_to_none() {
+        let dir = test_dir();
+        let path = dir.join("session.json");
+        let mut browser = Browser::new();
+        browser
+            .apply(
+                Command::OpenTab {
+                    url: "https://source.test".into(),
+                    placement: Placement::End,
+                    activate: true,
+                    opener: None,
+                },
+                1,
+            )
+            .unwrap();
+        let opener = browser.active_tab().unwrap();
+        browser
+            .apply(
+                Command::OpenTab {
+                    url: "https://popup.test".into(),
+                    placement: Placement::End,
+                    activate: true,
+                    opener: Some(opener),
+                },
+                2,
+            )
+            .unwrap();
+        let popup = browser.active_tab().unwrap();
+        save(&path, &browser).unwrap();
+        assert_eq!(
+            load(&path).unwrap().browser.tab(popup).unwrap().opener(),
+            Some(opener)
+        );
+
+        let mut old_session: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let tabs = old_session["browser"]["tabs"].as_object_mut().unwrap();
+        for tab in tabs.values_mut() {
+            tab.as_object_mut().unwrap().remove("opener");
+        }
+        fs::write(&path, serde_json::to_vec(&old_session).unwrap()).unwrap();
+        let loaded = load(&path).unwrap();
+        assert_eq!(loaded.browser.tab(popup).unwrap().opener(), None);
         assert_eq!(loaded.browser.check_invariants(), Ok(()));
         fs::remove_dir_all(dir).unwrap();
     }
@@ -261,6 +310,7 @@ mod tests {
                     url: "saved".into(),
                     placement: Placement::End,
                     activate: false,
+                    opener: None,
                 },
                 1,
             )
@@ -290,6 +340,7 @@ mod tests {
                     url: "new".into(),
                     placement: Placement::End,
                     activate: false,
+                    opener: None,
                 },
                 1,
             )

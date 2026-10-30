@@ -50,6 +50,8 @@ pub struct Group {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tab {
     pub(crate) id: TabId,
+    #[serde(default)]
+    pub(crate) opener: Option<TabId>,
     pub(crate) url: String,
     pub(crate) title: String,
     pub(crate) last_active_ms: u64,
@@ -115,6 +117,8 @@ pub enum InvariantError {
     UnplacedTab,
     /// a tab's stored id differs from its lookup id
     MismatchedTabId,
+    /// a tab's opener is absent
+    MissingOpener,
     /// the active workspace is absent
     MissingActiveWorkspace,
     /// an active tab belongs elsewhere
@@ -247,6 +251,11 @@ impl Browser {
             if *id != tab.id {
                 return Err(InvariantError::MismatchedTabId);
             }
+            if let Some(opener) = tab.opener
+                && !self.tabs.contains_key(&opener)
+            {
+                return Err(InvariantError::MissingOpener);
+            }
             highest = highest.max(id.0);
         }
         if self.next_id <= highest {
@@ -368,6 +377,10 @@ impl Tab {
     pub fn id(&self) -> TabId {
         self.id
     }
+    /// returns the tab that opened this tab
+    pub fn opener(&self) -> Option<TabId> {
+        self.opener
+    }
     /// returns the current URL
     pub fn url(&self) -> &str {
         &self.url
@@ -391,13 +404,37 @@ impl Tab {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+    use crate::{Command, Placement};
 
     #[test]
     fn new_browser_is_valid() {
         let browser = Browser::new();
         assert_eq!(browser.workspaces()[0].name(), "Home");
         assert_eq!(browser.check_invariants(), Ok(()));
+    }
+
+    #[test]
+    fn missing_opener_breaks_invariant() {
+        let mut browser = Browser::new();
+        browser
+            .apply(
+                Command::OpenTab {
+                    url: "https://popup.test".into(),
+                    placement: Placement::End,
+                    activate: true,
+                    opener: None,
+                },
+                1,
+            )
+            .unwrap();
+        let tab = browser.active_tab().unwrap();
+        browser.tabs.get_mut(&tab).unwrap().opener = Some(TabId(999));
+        assert_eq!(
+            browser.check_invariants(),
+            Err(InvariantError::MissingOpener)
+        );
     }
 }
