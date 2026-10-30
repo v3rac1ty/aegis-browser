@@ -9,4 +9,5 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+aegis-ffi = { path = "../aegis-ffi" }
 wry.workspace = true

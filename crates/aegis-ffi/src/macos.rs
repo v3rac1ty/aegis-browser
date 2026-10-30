@@ -71,3 +71,28 @@ pub(super) fn install_shortcuts(
     // the app menu owns macOS shortcuts in M4
     Ok(())
 }
+
+pub(super) fn go_back(webview: &WebView) -> Result<(), FfiError> {
+    let native = webview.webview();
+    // SAFETY: wry returns a live WKWebView subclass on the main thread.
+    unsafe { native.goBack() };
+    Ok(())
+}
+
+pub(super) fn go_forward(webview: &WebView) -> Result<(), FfiError> {
+    let native = webview.webview();
+    // SAFETY: wry returns a live WKWebView subclass on the main thread.
+    unsafe { native.goForward() };
+    Ok(())
+}
+
+pub(super) fn focus(webview: &WebView) -> Result<(), FfiError> {
+    let native = webview.webview();
+    let window = native
+        .window()
+        .ok_or_else(|| FfiError::Native("webview has no window".to_owned()))?;
+    if !window.makeFirstResponder(Some(&native)) {
+        return Err(FfiError::Native("webview did not take focus".to_owned()));
+    }
+    Ok(())
+}

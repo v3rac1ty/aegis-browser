@@ -3,9 +3,17 @@
 #![forbid(unsafe_code)]
 
 mod app;
+mod command_bar;
+mod compact;
+mod paths;
+mod persist;
+mod sidebar;
+mod theme;
+mod views;
 
 use std::error::Error;
 use std::fmt;
+use std::path::{Path, PathBuf};
 
 use aegis_engine::Start;
 use eframe::egui;
@@ -31,10 +39,16 @@ impl fmt::Display for StartupError {
 
 impl Error for StartupError {}
 
-fn start_from_args() -> Result<Start, StartupError> {
+struct StartupOptions {
+    start: Option<Start>,
+    data_dir: PathBuf,
+}
+
+fn parse_args(args: &[String], current_dir: &Path) -> Result<StartupOptions, StartupError> {
     let mut url = None;
     let mut test_page = false;
-    let mut args = std::env::args().skip(1);
+    let mut data_dir = None;
+    let mut args = args.iter();
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -42,9 +56,20 @@ fn start_from_args() -> Result<Start, StartupError> {
                 let value = args
                     .next()
                     .ok_or_else(|| StartupError::Arguments("--url needs an address".to_owned()))?;
-                url = Some(value);
+                url = Some(value.clone());
             }
             "--test-page" => test_page = true,
+            "--data-dir" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| StartupError::Arguments("--data-dir needs a path".to_owned()))?;
+                let path = PathBuf::from(value);
+                data_dir = Some(if path.is_absolute() {
+                    path
+                } else {
+                    current_dir.join(path)
+                });
+            }
             _ => return Err(StartupError::Arguments(format!("unknown argument: {arg}"))),
         }
     }
@@ -55,17 +80,29 @@ fn start_from_args() -> Result<Start, StartupError> {
         ));
     }
 
-    if test_page {
-        return Ok(Start::Html(include_str!("test_page.html").to_owned()));
-    }
-
-    Ok(Start::Url(
-        url.unwrap_or_else(|| "https://example.com".to_owned()),
-    ))
+    let start = if test_page {
+        Some(Start::Html(include_str!("test_page.html").to_owned()))
+    } else {
+        match url {
+            Some(url) => {
+                let page = aegis_ipc::page_url(&url)
+                    .map_err(|error| StartupError::Arguments(format!("invalid --url: {error}")))?;
+                Some(Start::Url(page.into_string()))
+            }
+            None => None,
+        }
+    };
+    Ok(StartupOptions {
+        start,
+        data_dir: data_dir.unwrap_or_else(paths::data_dir),
+    })
 }
 
 fn main() -> Result<(), StartupError> {
-    let start = start_from_args()?;
+    let current_dir = std::env::current_dir()
+        .map_err(|error| StartupError::Arguments(format!("current directory: {error}")))?;
+    let options_from_args =
+        parse_args(&std::env::args().skip(1).collect::<Vec<_>>(), &current_dir)?;
 
     #[cfg(target_os = "linux")]
     {
@@ -94,7 +131,37 @@ fn main() -> Result<(), StartupError> {
     eframe::run_native(
         "Aegis Browser",
         options,
-        Box::new(|_| Ok(Box::new(app::AegisApp::new(start)))),
+        Box::new(|creation| {
+            Ok(Box::new(app::AegisApp::new(
+                options_from_args.start,
+                options_from_args.data_dir,
+                creation.egui_ctx.clone(),
+            )))
+        }),
     )
     .map_err(StartupError::Eframe)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn data_dir_argument_resolves_relative_paths() {
+        let current_dir = Path::new("/test/current");
+        let args = vec!["--data-dir".to_owned(), "benchmark".to_owned()];
+        let Ok(options) = parse_args(&args, current_dir) else {
+            panic!("valid data directory argument should parse");
+        };
+        assert_eq!(options.data_dir, current_dir.join("benchmark"));
+    }
+
+    #[test]
+    fn data_dir_argument_requires_value() {
+        let args = vec!["--data-dir".to_owned()];
+        assert!(matches!(
+            parse_args(&args, Path::new("/test/current")),
+            Err(StartupError::Arguments(message)) if message == "--data-dir needs a path"
+        ));
+    }
 }

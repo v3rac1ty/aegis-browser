@@ -1,418 +1,369 @@
-use std::cell::Cell;
-use std::rc::Rc;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use aegis_engine::{Bounds, ContentView, Start, is_http_url};
-use aegis_ffi::{BlockRules, Shortcut, SuspendOutcome};
+use aegis_core::{Browser, Command, Effect, Placement, TabId, session};
+use aegis_engine::{Engine, Start};
+use aegis_ffi::Shortcut;
 use eframe::egui;
 
-const SIDEBAR_WIDTH: f32 = 260.0;
-const HOT_STRIP_WIDTH: f32 = 6.0;
-const COMMAND_WIDTH: f32 = 600.0;
-const COMMAND_HEIGHT: f32 = 56.0;
-const COMMAND_FOCUS_TIMEOUT: Duration = Duration::from_millis(500);
-const HOVER_ANIMATION_SECONDS: f32 = 0.16;
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum CommandBarState {
-    Closed,
-    Opening {
-        focused_frames: u8,
-        started_at: Instant,
-    },
-    Open,
-}
-
-#[derive(Clone, Copy, Debug)]
-enum SuspendDisplay {
-    Outcome(SuspendOutcome),
-    Resumed,
-}
+use crate::command_bar::{self, CommandBar, Mode};
+use crate::compact::Compact;
+use crate::persist::SessionSaver;
+use crate::sidebar::{Action, Sidebar};
+use crate::theme;
+use crate::views::{ExecuteResult, Views};
 
 pub struct AegisApp {
-    start: Option<Start>,
-    content_view: Option<ContentView>,
-    content_bounds: Option<Bounds>,
-    window_scale: Option<f64>,
-    command_state: CommandBarState,
-    command_text: String,
-    compact: bool,
-    hover_sidebar_open: bool,
-    hover_left_at: Option<Instant>,
-    debug_focus: bool,
-    last_root_focus: Option<bool>,
-    last_command_focus: Option<bool>,
-    blocked_count: Rc<Cell<usize>>,
-    command_requested: Rc<Cell<bool>>,
-    suspend_outcome: Rc<Cell<SuspendDisplay>>,
-    error: Option<String>,
+    browser: Browser,
+    // drop views before the engine so the shared web context stays live
+    views: Views,
+    engine: Engine,
+    sidebar: Sidebar,
+    command_bar: CommandBar,
+    compact: Compact,
+    saver: SessionSaver,
+    saving_disabled: bool,
+    started: Instant,
+    initial: Vec<Command>,
+    deferred_views: Vec<TabId>,
+    test_page_pending: bool,
+    notice: Option<String>,
+    #[cfg(debug_assertions)]
+    frame_count: Option<u64>,
 }
 
 impl AegisApp {
-    pub fn new(start: Start) -> Self {
-        Self {
-            start: Some(start),
-            content_view: None,
-            content_bounds: None,
-            window_scale: None,
-            command_state: CommandBarState::Closed,
-            command_text: String::new(),
-            compact: false,
-            hover_sidebar_open: false,
-            hover_left_at: None,
-            debug_focus: cfg!(debug_assertions)
-                && std::env::var("AEGIS_DEBUG_FOCUS").as_deref() == Ok("1"),
-            last_root_focus: None,
-            last_command_focus: None,
-            blocked_count: Rc::new(Cell::new(0)),
-            command_requested: Rc::new(Cell::new(false)),
-            suspend_outcome: Rc::new(Cell::new(SuspendDisplay::Resumed)),
-            error: None,
-        }
-    }
-
-    fn open_command_bar(&mut self, reason: &str) {
-        if self.command_state != CommandBarState::Closed {
-            return;
-        }
-        self.command_state = CommandBarState::Opening {
-            focused_frames: 0,
-            started_at: Instant::now(),
-        };
-        self.command_text.clear();
-        if self.debug_focus {
-            eprintln!("command bar opened: {reason}");
-        }
-    }
-
-    fn close_command_bar(&mut self, reason: &str) {
-        if self.command_state == CommandBarState::Closed {
-            return;
-        }
-        self.command_state = CommandBarState::Closed;
-        if self.debug_focus {
-            eprintln!("command bar closed: {reason}");
-        }
-    }
-
-    fn log_focus(&mut self, viewport: &str, focused: bool) {
-        let previous = if viewport == "root" {
-            &mut self.last_root_focus
-        } else {
-            &mut self.last_command_focus
-        };
-        if *previous != Some(focused) {
-            *previous = Some(focused);
-            if self.debug_focus {
-                eprintln!("{viewport} focus: {focused}");
-            }
-        }
-    }
-
-    fn sidebar_contents(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Aegis");
-        ui.separator();
-        ui.label("Example tab");
-        ui.label("Pinned tab");
-        ui.label("Another tab");
-        ui.add_space(20.0);
-
-        if ui.button("Command bar").clicked() {
-            self.open_command_bar("sidebar button");
-        }
-        if ui.checkbox(&mut self.compact, "Compact mode").changed() {
-            self.hover_sidebar_open = false;
-            self.hover_left_at = None;
-            ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
-        }
-
-        #[cfg(target_os = "windows")]
-        ui.label(format!("Blocked: {}", self.blocked_count.get()));
-        #[cfg(not(target_os = "windows"))]
-        ui.label("Blocked: n/a");
-
-        if ui.button("Suspend").clicked()
-            && let Some(view) = &self.content_view
-        {
-            if let Err(error) = aegis_ffi::set_background_memory(view.webview(), true) {
-                self.error = Some(error.to_string());
-            }
-            let outcome = self.suspend_outcome.clone();
-            let ctx = ui.ctx().clone();
-            if let Err(error) = aegis_ffi::suspend(
-                view.webview(),
-                Box::new(move |result| {
-                    outcome.set(SuspendDisplay::Outcome(result));
-                    ctx.request_repaint();
-                }),
-            ) {
-                self.error = Some(error.to_string());
-            }
-        }
-        if ui.button("Resume").clicked()
-            && let Some(view) = &self.content_view
-        {
-            match aegis_ffi::resume(view.webview()) {
-                Ok(()) => self.suspend_outcome.set(SuspendDisplay::Resumed),
-                Err(error) => self.error = Some(error.to_string()),
-            }
-            if let Err(error) = aegis_ffi::set_background_memory(view.webview(), false) {
-                self.error = Some(error.to_string());
-            }
-        }
-        let status = match self.suspend_outcome.get() {
-            SuspendDisplay::Outcome(outcome) => format!("{outcome:?}"),
-            SuspendDisplay::Resumed => "Running".to_owned(),
-        };
-        ui.label(format!("Suspend: {status}"));
-
-        if let Some(error) = &self.error {
-            ui.add_space(20.0);
-            ui.colored_label(egui::Color32::RED, error);
-        }
-    }
-
-    fn sync_content_view(&mut self, ctx: &egui::Context, frame: &eframe::Frame, rect: egui::Rect) {
-        let Some(window) = frame.winit_window() else {
-            return;
-        };
-
-        // egui points include UI zoom; wry logical pixels only include OS scaling
-        let logical_per_point = f64::from(ctx.pixels_per_point()) / window.scale_factor();
-        let bounds = Bounds {
-            x: f64::from(rect.min.x) * logical_per_point,
-            y: f64::from(rect.min.y) * logical_per_point,
-            width: f64::from(rect.width()) * logical_per_point,
-            height: f64::from(rect.height()) * logical_per_point,
-        };
-
-        if self.content_view.is_none() {
-            let Some(start) = self.start.take() else {
-                return;
-            };
-            match ContentView::new(window.as_ref(), bounds, Start::Html(String::new())) {
-                Ok(view) => {
-                    let blocked_count = self.blocked_count.clone();
-                    let repaint = ctx.clone();
-                    if let Err(error) = aegis_ffi::install_block_rules(
-                        view.webview(),
-                        &BlockRules {
-                            url_substrings: vec!["aegis-block".to_owned()],
-                        },
-                        Box::new(move |_| {
-                            blocked_count.set(blocked_count.get() + 1);
-                            repaint.request_repaint();
-                        }),
-                    ) {
-                        self.error = Some(error.to_string());
-                    }
-                    let command_requested = self.command_requested.clone();
-                    let repaint = ctx.clone();
-                    if let Err(error) = aegis_ffi::install_shortcuts(
-                        view.webview(),
-                        Box::new(move |shortcut| match shortcut {
-                            Shortcut::CommandBar => {
-                                command_requested.set(true);
-                                repaint.request_repaint();
-                            }
-                            Shortcut::NewTab => eprintln!("new tab shortcut"),
-                        }),
-                    ) {
-                        self.error = Some(error.to_string());
-                    }
-                    let load_result = match start {
-                        Start::Url(url) => view.navigate(&url).map_err(|error| error.to_string()),
-                        Start::Html(html) => view
-                            .webview()
-                            .load_html(&html)
-                            .map_err(|error| error.to_string()),
-                    };
-                    if let Err(error) = load_result {
-                        self.error = Some(error);
-                    }
-                    self.content_view = Some(view);
-                    self.content_bounds = Some(bounds);
-                    self.window_scale = Some(window.scale_factor());
-                }
-                Err(error) => self.error = Some(error.to_string()),
-            }
-            return;
-        }
-
-        if self.content_bounds == Some(bounds) && self.window_scale == Some(window.scale_factor()) {
-            return;
-        }
-
-        if let Some(view) = &self.content_view
-            && let Err(error) = view.set_bounds(bounds)
-        {
-            self.error = Some(error.to_string());
-            return;
-        }
-        self.content_bounds = Some(bounds);
-        self.window_scale = Some(window.scale_factor());
-    }
-
-    fn show_command_bar(&mut self, ctx: &egui::Context, content: egui::Rect, window: egui::Rect) {
-        let width = COMMAND_WIDTH.min(content.width());
-        let x = window.min.x + content.center().x - width / 2.0;
-        let y = window.min.y + content.min.y + 80.0;
-        let builder = egui::ViewportBuilder::default()
-            .with_position(egui::pos2(x, y))
-            .with_inner_size([width, COMMAND_HEIGHT])
-            .with_decorations(false)
-            .with_resizable(false)
-            .with_taskbar(false)
-            .with_always_on_top()
-            .with_active(false);
-
-        let (focused, key_down) = ctx.show_viewport_immediate(
-            egui::ViewportId::from_hash_of("command_bar"),
-            builder,
-            |ui, _| {
-                egui::CentralPanel::default().show(ui, |ui| {
-                    ui.add_space(7.0);
-                    let response = ui.add_sized(
-                        [ui.available_width(), 36.0],
-                        egui::TextEdit::singleline(&mut self.command_text).hint_text("Enter URL"),
-                    );
-                    if matches!(self.command_state, CommandBarState::Opening { .. }) {
-                        response.request_focus();
-                    }
-
-                    let escape = ui.input(|input| input.key_pressed(egui::Key::Escape));
-                    let enter = ui.input(|input| input.key_pressed(egui::Key::Enter));
-                    if escape || enter {
-                        self.close_command_bar(if escape { "escape" } else { "enter" });
-                        if enter {
-                            let url = self.command_text.trim();
-                            if is_http_url(url) {
-                                if let Some(view) = &self.content_view
-                                    && let Err(error) = view.navigate(url)
-                                {
-                                    self.error = Some(error.to_string());
-                                }
-                            } else {
-                                self.error = Some("Enter an http:// or https:// URL".to_owned());
-                            }
-                        }
-                        ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
-                    }
-                });
-                ui.input(|input| {
-                    (
-                        input.viewport().focused == Some(true),
-                        input.key_down(egui::Key::L),
-                    )
-                })
-            },
-        );
-        self.log_focus("overlay", focused);
-        if let CommandBarState::Opening {
-            focused_frames,
-            started_at,
-        } = self.command_state
-        {
-            if !focused && started_at.elapsed() >= COMMAND_FOCUS_TIMEOUT {
-                self.close_command_bar("could not take focus");
-            } else if focused && !key_down {
-                // webview key-up may bypass egui, so give focus a brief time to settle
-                if focused_frames >= 1 && started_at.elapsed() >= Duration::from_millis(200) {
-                    self.command_state = CommandBarState::Open;
+    pub fn new(start: Option<Start>, data_dir: PathBuf, ctx: egui::Context) -> Self {
+        ctx.set_theme(egui::ThemePreference::System);
+        let directory_error = std::fs::create_dir_all(&data_dir)
+            .err()
+            .map(|error| format!("Data directory: {error}"));
+        let session_path = data_dir.join("session.json");
+        let (browser, notice, missing, saving_disabled) = match session::load(&session_path) {
+            Ok(loaded) => {
+                let notice = if loaded.source == session::Source::Backup {
+                    Some(if loaded.main_move_failed {
+                        "Restored session from backup. Saving is off until restart so the unreadable session isn't overwritten."
+                            .to_owned()
+                    } else if let Some(path) = &loaded.main_moved_to {
+                        format!(
+                            "Restored session from backup. Unreadable session kept at {}.",
+                            path.file_name()
+                                .unwrap_or(path.as_os_str())
+                                .to_string_lossy()
+                        )
+                    } else {
+                        "Restored session from backup".to_owned()
+                    })
                 } else {
-                    self.command_state = CommandBarState::Opening {
-                        focused_frames: focused_frames.saturating_add(1),
-                        started_at,
-                    };
-                }
-            } else {
-                self.command_state = CommandBarState::Opening {
-                    focused_frames: 0,
-                    started_at,
+                    None
                 };
+                (loaded.browser, notice, false, loaded.main_move_failed)
             }
-            if !focused && self.command_state != CommandBarState::Closed {
-                ctx.send_viewport_cmd_to(
-                    egui::ViewportId::from_hash_of("command_bar"),
-                    egui::ViewportCommand::Focus,
-                );
+            Err(failure) => {
+                if matches!(failure.error, session::SessionError::Missing) {
+                    (Browser::new(), None, true, false)
+                } else {
+                    let notice = if failure.move_failed {
+                        "Couldn't restore your last session. Saving is off until restart so it isn't overwritten."
+                            .to_owned()
+                    } else if let Some(path) = &failure.moved_to {
+                        format!(
+                            "Couldn't restore your last session. It was kept at {}.",
+                            path.file_name()
+                                .unwrap_or(path.as_os_str())
+                                .to_string_lossy()
+                        )
+                    } else {
+                        format!("Session restore: {}", failure.error)
+                    };
+                    (Browser::new(), Some(notice), true, failure.move_failed)
+                }
             }
-            ctx.request_repaint_of(egui::ViewportId::ROOT);
-        } else if self.command_state == CommandBarState::Open && !focused {
-            self.close_command_bar("overlay lost focus");
-            ctx.request_repaint_of(egui::ViewportId::ROOT);
+        };
+        let mut initial = Vec::new();
+        if missing {
+            initial.push(Command::OpenTab {
+                url: "https://duckduckgo.com".to_owned(),
+                placement: Placement::End,
+                activate: true,
+            });
+        } else if let Some(tab) = browser.active_tab() {
+            initial.push(Command::ActivateTab(tab));
+        }
+        let mut test_page_pending = false;
+        if let Some(start) = start {
+            let url = match start {
+                Start::Url(url) => url,
+                Start::Html(_) => {
+                    test_page_pending = true;
+                    "about:blank".to_owned()
+                }
+            };
+            if let Ok(url) = aegis_ipc::page_url(&url) {
+                initial.push(Command::OpenTab {
+                    url: url.into_string(),
+                    placement: Placement::AfterActive,
+                    activate: true,
+                });
+            }
+        }
+        let notice = notice.or(directory_error);
+        let engine = Engine::new(data_dir, Box::new(move || ctx.request_repaint()));
+        Self {
+            browser,
+            views: Views::new(),
+            engine,
+            sidebar: Sidebar::new(),
+            command_bar: CommandBar::new(),
+            compact: Compact::new(),
+            saver: SessionSaver::new(session_path),
+            saving_disabled,
+            started: Instant::now(),
+            initial,
+            deferred_views: Vec::new(),
+            test_page_pending,
+            notice,
+            #[cfg(debug_assertions)]
+            frame_count: (std::env::var("AEGIS_DEBUG_FRAMES").as_deref() == Ok("1")).then_some(0),
         }
     }
 
-    fn show_hover_sidebar(
-        &mut self,
-        ctx: &egui::Context,
-        window: egui::Rect,
-        strip_hovered: bool,
-        width: f32,
-    ) {
-        let builder = egui::ViewportBuilder::default()
-            .with_position(egui::pos2(window.min.x + HOT_STRIP_WIDTH, window.min.y))
-            .with_inner_size([width, window.height()])
-            .with_decorations(false)
-            .with_resizable(false)
-            .with_taskbar(false)
-            .with_always_on_top()
-            .with_active(false);
+    fn now_ms(&self) -> u64 {
+        self.started.elapsed().as_millis() as u64
+    }
 
-        let sidebar_hovered = ctx.show_viewport_immediate(
-            egui::ViewportId::from_hash_of("hover_sidebar"),
-            builder,
-            |ui, _| {
-                let fill = ui.visuals().panel_fill;
-                let separator = ui.visuals().widgets.noninteractive.bg_stroke.color;
-                egui::CentralPanel::default()
-                    .frame(egui::Frame::NONE.fill(fill))
-                    .show(ui, |ui| {
-                        let visible = ui.max_rect();
-                        // keep the contents full width while the window reveals them
-                        let contents = egui::Rect::from_min_size(
-                            egui::pos2(visible.right() - SIDEBAR_WIDTH, visible.top()),
-                            egui::vec2(SIDEBAR_WIDTH, visible.height()),
-                        );
-                        ui.scope_builder(egui::UiBuilder::new().max_rect(contents), |ui| {
-                            self.sidebar_contents(ui);
-                        });
-                        ui.painter().line_segment(
-                            [
-                                egui::pos2(visible.right() - 0.5, visible.top()),
-                                egui::pos2(visible.right() - 0.5, visible.bottom()),
-                            ],
-                            egui::Stroke::new(1.0, separator),
-                        );
-                    });
-                ui.input(|input| input.pointer.hover_pos().is_some())
-            },
-        );
-
-        if sidebar_hovered || strip_hovered {
-            self.hover_sidebar_open = true;
-            self.hover_left_at = None;
-        } else if self.hover_sidebar_open {
-            let left_at = *self.hover_left_at.get_or_insert_with(Instant::now);
-            let elapsed = left_at.elapsed();
-            if elapsed >= Duration::from_millis(250) {
-                self.hover_sidebar_open = false;
-                self.hover_left_at = None;
-                ctx.request_repaint_of(egui::ViewportId::ROOT);
-            } else {
-                ctx.request_repaint_after_for(
-                    Duration::from_millis(250) - elapsed,
-                    egui::ViewportId::ROOT,
-                );
+    fn apply(&mut self, command: Command, frame: &eframe::Frame, ctx: &egui::Context) {
+        let is_test_open = self.test_page_pending
+            && matches!(&command, Command::OpenTab { url, .. } if url == "about:blank");
+        let effects = match self.browser.apply(command, self.now_ms()) {
+            Ok(effects) => effects,
+            Err(error) => {
+                self.notice = Some(error.to_string());
+                return;
+            }
+        };
+        if is_test_open {
+            if let Some(tab) = self.browser.active_tab() {
+                self.views.set_test_page(tab);
+            }
+            self.test_page_pending = false;
+        }
+        for effect in effects {
+            if effect == Effect::PersistSession {
+                if !self.saving_disabled {
+                    self.saver.mark_dirty(self.now_ms());
+                }
+                continue;
+            }
+            match self.views.execute(
+                effect,
+                &mut self.engine,
+                frame,
+                ctx,
+                self.browser.active_tab(),
+            ) {
+                Ok(ExecuteResult::Command(command)) => {
+                    if let Err(error) = self.browser.apply(command, self.now_ms()) {
+                        self.notice = Some(error.to_string());
+                    }
+                }
+                Ok(ExecuteResult::Deferred(tab)) => {
+                    if !self.deferred_views.contains(&tab) {
+                        self.deferred_views.push(tab);
+                    }
+                }
+                Ok(ExecuteResult::Done) => {}
+                Err(error) => self.notice = Some(error),
             }
         }
+    }
+
+    fn handle_shortcut(&mut self, shortcut: Shortcut, frame: &eframe::Frame, ctx: &egui::Context) {
+        match shortcut {
+            Shortcut::CommandBar => self.command_bar.open(Mode::CurrentTab),
+            Shortcut::NewTab => self.command_bar.open(Mode::NewTab),
+            Shortcut::CloseTab => {
+                if let Some(tab) = self.browser.active_tab() {
+                    self.apply(Command::CloseTab(tab), frame, ctx);
+                }
+            }
+            Shortcut::NextTab | Shortcut::PrevTab => {
+                let order = self.browser.visual_order(self.browser.active_workspace());
+                if order.is_empty() {
+                    return;
+                }
+                let current = self
+                    .browser
+                    .active_tab()
+                    .and_then(|id| order.iter().position(|tab| *tab == id))
+                    .unwrap_or(0);
+                let next = if shortcut == Shortcut::NextTab {
+                    (current + 1) % order.len()
+                } else {
+                    (current + order.len() - 1) % order.len()
+                };
+                self.apply(Command::ActivateTab(order[next]), frame, ctx);
+            }
+            Shortcut::Reload => {
+                if let Some(view) = self.views.active(&self.browser)
+                    && let Err(error) = view.reload()
+                {
+                    self.notice = Some(error.to_string());
+                }
+            }
+            Shortcut::Back => {
+                if let Some(view) = self.views.active(&self.browser)
+                    && let Err(error) = view.go_back()
+                {
+                    self.notice = Some(error.to_string());
+                }
+            }
+            Shortcut::Forward => {
+                if let Some(view) = self.views.active(&self.browser)
+                    && let Err(error) = view.go_forward()
+                {
+                    self.notice = Some(error.to_string());
+                }
+            }
+        }
+    }
+
+    fn keyboard(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+        let keys = ctx.input(|input| {
+            let command = input.modifiers.command;
+            let ctrl = input.modifiers.ctrl;
+            let shift = input.modifiers.shift;
+            let alt = input.modifiers.alt;
+            let mut keys = Vec::new();
+            if command && input.key_pressed(egui::Key::T) {
+                keys.push(Shortcut::NewTab);
+            }
+            if command && input.key_pressed(egui::Key::L) {
+                keys.push(Shortcut::CommandBar);
+            }
+            if command && input.key_pressed(egui::Key::W) {
+                keys.push(Shortcut::CloseTab);
+            }
+            if ctrl && input.key_pressed(egui::Key::Tab) {
+                keys.push(if shift {
+                    Shortcut::PrevTab
+                } else {
+                    Shortcut::NextTab
+                });
+            }
+            if (command && input.key_pressed(egui::Key::R)) || input.key_pressed(egui::Key::F5) {
+                keys.push(Shortcut::Reload);
+            }
+            if (alt && input.key_pressed(egui::Key::ArrowLeft))
+                || (cfg!(target_os = "macos")
+                    && command
+                    && input.key_pressed(egui::Key::OpenBracket))
+            {
+                keys.push(Shortcut::Back);
+            }
+            if (alt && input.key_pressed(egui::Key::ArrowRight))
+                || (cfg!(target_os = "macos")
+                    && command
+                    && input.key_pressed(egui::Key::CloseBracket))
+            {
+                keys.push(Shortcut::Forward);
+            }
+            keys
+        });
+        for shortcut in keys {
+            self.handle_shortcut(shortcut, frame, ctx);
+        }
+        for shortcut in self.views.take_shortcuts() {
+            self.handle_shortcut(shortcut, frame, ctx);
+        }
+    }
+
+    fn action(&mut self, action: Action, frame: &eframe::Frame, ctx: &egui::Context) {
+        match action {
+            Action::Command(Command::MoveTab { tab, to }) => {
+                let to = crate::sidebar::location_after_removal(&self.browser, tab, to);
+                self.apply(Command::MoveTab { tab, to }, frame, ctx);
+            }
+            Action::Command(command) => self.apply(command, frame, ctx),
+            Action::OpenBar(mode) => self.command_bar.open(mode),
+            Action::Back => self.handle_shortcut(Shortcut::Back, frame, ctx),
+            Action::Forward => self.handle_shortcut(Shortcut::Forward, frame, ctx),
+            Action::Reload => self.handle_shortcut(Shortcut::Reload, frame, ctx),
+            Action::Stop => {
+                if let Some(view) = self.views.active(&self.browser)
+                    && let Err(error) = view.webview().evaluate_script("window.stop()")
+                {
+                    self.notice = Some(error.to_string());
+                }
+            }
+            Action::DismissNotice => self.notice = None,
+            Action::SetCompact(compact) => {
+                self.apply(Command::SetCompact(compact), frame, ctx);
+                self.compact.reset();
+            }
+        }
+    }
+
+    fn open_input(&mut self, mode: Mode, input: &str, frame: &eframe::Frame, ctx: &egui::Context) {
+        if input.trim().is_empty() {
+            return;
+        }
+        let url = command_bar::classify_input(input, self.browser.settings().search_engine);
+        match mode {
+            Mode::NewTab => self.apply(
+                Command::OpenTab {
+                    url,
+                    placement: Placement::AfterActive,
+                    activate: true,
+                },
+                frame,
+                ctx,
+            ),
+            Mode::CurrentTab => {
+                if let Some(tab) = self.browser.active_tab() {
+                    self.apply(Command::Navigate { tab, url }, frame, ctx);
+                } else {
+                    self.apply(
+                        Command::OpenTab {
+                            url,
+                            placement: Placement::End,
+                            activate: true,
+                        },
+                        frame,
+                        ctx,
+                    );
+                }
+            }
+        }
+    }
+
+    fn save_due(&mut self) {
+        if self.saving_disabled {
+            return;
+        }
+        if let Err(error) = self.saver.save_if_due(&self.browser, self.now_ms()) {
+            self.notice = Some(error.to_string());
+            self.saver.mark_dirty(self.now_ms());
+        }
+    }
+
+    #[cfg(debug_assertions)]
+    fn count_frame(&mut self) {
+        let Some(count) = &mut self.frame_count else {
+            return;
+        };
+        *count += 1;
+        eprintln!("frame {count}");
     }
 }
 
 impl eframe::App for AegisApp {
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        #[cfg(debug_assertions)]
+        self.count_frame();
+        let deferred = std::mem::take(&mut self.deferred_views);
         #[cfg(target_os = "linux")]
         {
             // webkitgtk needs its main loop pumped alongside winit
@@ -421,65 +372,93 @@ impl eframe::App for AegisApp {
             }
             ctx.request_repaint_after(Duration::from_millis(16));
         }
-
-        let root_focused = ctx.input(|input| input.viewport().focused == Some(true));
-        self.log_focus("root", root_focused);
-        if ctx.input(|input| input.pointer.any_pressed()) {
-            self.close_command_bar("main window click");
+        self.keyboard(&ctx, frame);
+        let (commands, notices) =
+            self.views
+                .drain_events(&self.engine, &self.browser, self.now_ms());
+        for notice in notices {
+            self.notice = Some(notice);
         }
-        if self.command_requested.replace(false) {
-            self.open_command_bar("webview shortcut");
+        for command in commands {
+            self.apply(command, frame, &ctx);
         }
-
-        if ctx.input(|input| input.modifiers.command && input.key_pressed(egui::Key::L)) {
-            self.open_command_bar("egui shortcut");
-        }
-
+        let mut actions = Vec::new();
         let mut strip_hovered = false;
-        if self.compact {
+        if self.browser.settings().compact {
             egui::Panel::left("hot_strip")
                 .resizable(false)
-                .exact_size(HOT_STRIP_WIDTH)
+                .exact_size(theme::HOT_STRIP_WIDTH)
                 .frame(egui::Frame::NONE)
                 .show_separator_line(false)
                 .show(ui, |ui| {
-                    let rect = ui.max_rect();
-                    ui.painter()
-                        .rect_filled(rect, 0.0, ui.visuals().faint_bg_color);
-                    strip_hovered = ui
-                        .interact(rect, ui.scope_id().with("hover"), egui::Sense::hover())
-                        .hovered();
+                    strip_hovered = self.compact.hot_strip(ui);
                 });
-            if strip_hovered {
-                self.hover_sidebar_open = true;
-                self.hover_left_at = None;
-            }
         } else {
             egui::Panel::left("sidebar")
                 .resizable(false)
-                .exact_size(SIDEBAR_WIDTH)
-                .show(ui, |ui| self.sidebar_contents(ui));
+                .exact_size(theme::SIDEBAR_WIDTH)
+                .frame(
+                    egui::Frame::NONE
+                        .fill(theme::palette(&ctx).background)
+                        .inner_margin(egui::Margin::same(10)),
+                )
+                .show(ui, |ui| {
+                    actions.extend(self.sidebar.show(
+                        ui,
+                        &self.browser,
+                        self.views.active_loading(&self.browser),
+                        self.notice.as_deref(),
+                    ));
+                });
         }
-
         let content = egui::CentralPanel::no_frame()
             .show(ui, |ui| ui.max_rect())
             .inner;
-        self.sync_content_view(&ctx, frame, content);
-
+        if let Err(error) = self.views.set_bounds(&ctx, frame, content) {
+            self.notice = Some(error);
+        }
+        for tab in deferred {
+            if self.browser.active_tab() == Some(tab) && !self.views.has_view(tab) {
+                self.apply(Command::ActivateTab(tab), frame, &ctx);
+            }
+        }
+        for command in std::mem::take(&mut self.initial) {
+            self.apply(command, frame, &ctx);
+        }
         if let Some(window) = ctx.input(|input| input.viewport().inner_rect) {
-            let progress = ctx.animate_bool_with_time_and_easing(
-                egui::Id::unique("hover_sidebar_animation"),
-                self.compact && self.hover_sidebar_open,
-                HOVER_ANIMATION_SECONDS,
-                egui::emath::easing::cubic_out,
-            );
-            let width = (SIDEBAR_WIDTH * progress).min((window.width() - HOT_STRIP_WIDTH).max(0.0));
-            if self.compact && width > 0.0 {
-                self.show_hover_sidebar(&ctx, window, strip_hovered, width);
+            if self.browser.settings().compact {
+                actions.extend(self.compact.show(
+                    &ctx,
+                    window,
+                    strip_hovered,
+                    &mut self.sidebar,
+                    &self.browser,
+                    self.views.active_loading(&self.browser),
+                    self.notice.as_deref(),
+                ));
             }
-            if self.command_state != CommandBarState::Closed {
-                self.show_command_bar(&ctx, content, window);
+            if let Some((mode, input)) = self.command_bar.show(&ctx, content, window) {
+                self.open_input(mode, &input, frame, &ctx);
             }
+        }
+        for action in actions {
+            self.action(action, frame, &ctx);
+        }
+        self.save_due();
+        if let Some(delay) = self.saver.time_until_due(self.now_ms()) {
+            ctx.request_repaint_after(delay);
+        }
+        if !self.deferred_views.is_empty() {
+            ctx.request_repaint_after(Duration::from_millis(16));
+        }
+    }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        if self.saving_disabled {
+            return;
+        }
+        if let Err(error) = self.saver.save(&self.browser) {
+            eprintln!("session save: {error}");
         }
     }
 }

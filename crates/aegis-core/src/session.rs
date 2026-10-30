@@ -42,8 +42,21 @@ pub struct Loaded {
     pub browser: Browser,
     /// file used to restore it
     pub source: Source,
-    /// whether a corrupt main file was moved aside
-    pub main_quarantined: bool,
+    /// where the unusable main file was moved
+    pub main_moved_to: Option<PathBuf>,
+    /// whether moving the unusable main file failed
+    pub main_move_failed: bool,
+}
+
+/// a failed restore and the fate of the main session file
+#[derive(Debug)]
+pub struct LoadFailure {
+    /// why the session could not be restored
+    pub error: SessionError,
+    /// where the unusable main file was moved
+    pub moved_to: Option<PathBuf>,
+    /// whether moving the unusable main file failed
+    pub move_failed: bool,
 }
 
 /// session read, write, or validation failure
@@ -104,48 +117,52 @@ pub fn save(path: &Path, browser: &Browser) -> Result<(), SessionError> {
 }
 
 /// restores the main session or its backup after corruption
-pub fn load(path: &Path) -> Result<Loaded, SessionError> {
+pub fn load(path: &Path) -> Result<Loaded, LoadFailure> {
     let backup = suffixed(path, ".bak");
     match load_one(path) {
         Ok(browser) => Ok(Loaded {
             browser,
             source: Source::Main,
-            main_quarantined: false,
+            main_moved_to: None,
+            main_move_failed: false,
         }),
-        Err(SessionError::UnsupportedVersion(version)) => {
-            Err(SessionError::UnsupportedVersion(version))
-        }
         Err(main_error) => {
-            if !backup.exists() {
-                if matches!(main_error, SessionError::Missing) {
-                    return Err(SessionError::Missing);
-                }
-                return Err(main_error);
+            let (moved_to, move_failed) = move_unusable_main(path, &main_error);
+            if matches!(main_error, SessionError::UnsupportedVersion(_)) || !backup.exists() {
+                return Err(LoadFailure {
+                    error: main_error,
+                    moved_to,
+                    move_failed,
+                });
             }
-            let browser = load_one(&backup)?;
-            let main_quarantined = if matches!(
-                main_error,
-                SessionError::Parse(_) | SessionError::Corrupt(_)
-            ) {
-                quarantine_main(path).is_ok()
-            } else {
-                false
-            };
+            let browser = load_one(&backup).map_err(|error| LoadFailure {
+                error,
+                moved_to: moved_to.clone(),
+                move_failed,
+            })?;
             Ok(Loaded {
                 browser,
                 source: Source::Backup,
-                main_quarantined,
+                main_moved_to: moved_to,
+                main_move_failed: move_failed,
             })
         }
     }
 }
 
-fn quarantine_main(path: &Path) -> Result<(), std::io::Error> {
-    let corrupt = suffixed(path, ".corrupt");
-    if corrupt.exists() {
-        fs::remove_file(&corrupt)?;
+fn move_unusable_main(path: &Path, error: &SessionError) -> (Option<PathBuf>, bool) {
+    let target = match error {
+        SessionError::Missing => return (None, false),
+        SessionError::UnsupportedVersion(version) => suffixed(path, &format!(".v{version}")),
+        _ => suffixed(path, ".corrupt"),
+    };
+    if target.exists() && fs::remove_file(&target).is_err() {
+        return (None, true);
     }
-    fs::rename(path, corrupt)
+    match fs::rename(path, &target) {
+        Ok(()) => (Some(target), false),
+        Err(_) => (None, true),
+    }
 }
 
 fn load_one(path: &Path) -> Result<Browser, SessionError> {
@@ -227,7 +244,8 @@ mod tests {
         fs::write(suffixed(&path, ".corrupt"), b"older").unwrap();
         let loaded = load(&path).unwrap();
         assert_eq!(loaded.source, Source::Backup);
-        assert!(loaded.main_quarantined);
+        assert_eq!(loaded.main_moved_to, Some(suffixed(&path, ".corrupt")));
+        assert!(!loaded.main_move_failed);
         assert_eq!(fs::read(suffixed(&path, ".corrupt")).unwrap(), b"broken");
         fs::remove_dir_all(dir).unwrap();
     }
@@ -252,7 +270,8 @@ mod tests {
         fs::write(&path, b"broken").unwrap();
         let loaded = load(&path).unwrap();
         assert_eq!(loaded.source, Source::Backup);
-        assert!(loaded.main_quarantined);
+        assert_eq!(loaded.main_moved_to, Some(suffixed(&path, ".corrupt")));
+        assert!(!loaded.main_move_failed);
         save(&path, &loaded.browser).unwrap();
         assert_eq!(load_one(&suffixed(&path, ".bak")).unwrap(), browser);
         fs::remove_dir_all(dir).unwrap();
@@ -296,7 +315,8 @@ mod tests {
         fs::create_dir(suffixed(&path, ".corrupt")).unwrap();
         let loaded = load(&path).unwrap();
         assert_eq!(loaded.source, Source::Backup);
-        assert!(!loaded.main_quarantined);
+        assert_eq!(loaded.main_moved_to, None);
+        assert!(loaded.main_move_failed);
         assert_eq!(fs::read(&path).unwrap(), b"broken");
         fs::remove_dir_all(dir).unwrap();
     }
@@ -314,14 +334,63 @@ mod tests {
     }
 
     #[test]
-    fn newer_version_is_rejected() {
+    fn corrupt_main_without_backup_is_kept_after_save() {
         let dir = test_dir();
         let path = dir.join("session.json");
+        let corrupt = suffixed(&path, ".corrupt");
+        fs::write(&path, b"broken").unwrap();
+        let failure = load(&path).unwrap_err();
+        assert!(matches!(failure.error, SessionError::Parse(_)));
+        assert_eq!(failure.moved_to, Some(corrupt.clone()));
+        assert!(!failure.move_failed);
+        assert!(!path.exists());
+        save(&path, &Browser::new()).unwrap();
+        assert_eq!(fs::read(&corrupt).unwrap(), b"broken");
+        assert!(load(&path).is_ok());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn failed_move_without_backup_is_reported() {
+        let dir = test_dir();
+        let path = dir.join("session.json");
+        fs::write(&path, b"broken").unwrap();
+        fs::create_dir(suffixed(&path, ".corrupt")).unwrap();
+        let failure = load(&path).unwrap_err();
+        assert!(matches!(failure.error, SessionError::Parse(_)));
+        assert_eq!(failure.moved_to, None);
+        assert!(failure.move_failed);
+        assert_eq!(fs::read(&path).unwrap(), b"broken");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn newer_version_without_backup_is_moved() {
+        let dir = test_dir();
+        let path = dir.join("session.json");
+        let newer = b"{\"version\":2,\"browser\":{}}";
+        fs::write(&path, newer).unwrap();
+        let failure = load(&path).unwrap_err();
+        assert!(matches!(failure.error, SessionError::UnsupportedVersion(2)));
+        assert_eq!(failure.moved_to, Some(suffixed(&path, ".v2")));
+        assert_eq!(fs::read(suffixed(&path, ".v2")).unwrap(), newer);
+        assert!(!path.exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn newer_version_with_backup_is_moved_without_using_backup() {
+        let dir = test_dir();
+        let path = dir.join("session.json");
+        let backup = suffixed(&path, ".bak");
+        save(&path, &Browser::new()).unwrap();
+        fs::copy(&path, &backup).unwrap();
+        let backup_bytes = fs::read(&backup).unwrap();
         fs::write(&path, b"{\"version\":2,\"browser\":{}}").unwrap();
-        assert!(matches!(
-            load(&path),
-            Err(SessionError::UnsupportedVersion(2))
-        ));
+        let failure = load(&path).unwrap_err();
+        assert!(matches!(failure.error, SessionError::UnsupportedVersion(2)));
+        assert_eq!(failure.moved_to, Some(suffixed(&path, ".v2")));
+        assert_eq!(fs::read(backup).unwrap(), backup_bytes);
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -330,7 +399,10 @@ mod tests {
         let dir = test_dir();
         assert!(matches!(
             load(&dir.join("missing.json")),
-            Err(SessionError::Missing)
+            Err(LoadFailure {
+                error: SessionError::Missing,
+                ..
+            })
         ));
         fs::remove_dir_all(dir).unwrap();
     }

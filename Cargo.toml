@@ -9,6 +9,7 @@ rust-version = "1.99"
 publish = false
 
 [workspace.dependencies]
+url = "2.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts", "accesskit", "x11", "wayland"] }
@@ -18,7 +19,8 @@ webview2-com = "=0.39.1"
 windows = { version = "=0.62.2", features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_System_Com", "Win32_Foundation"] }
 objc2 = "=0.6.5"
 objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSError", "NSString"] }
-objc2-web-kit = { version = "=0.3.2", default-features = false, features = ["std", "block2", "WKContentRuleList", "WKContentRuleListStore", "WKUserContentController"] }
+objc2-web-kit = { version = "=0.3.2", default-features = false, features = ["std", "block2", "WKContentRuleList", "WKContentRuleListStore", "WKUserContentController", "WKWebView", "WKNavigation"] }
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "NSResponder", "NSView", "NSWindow"] }
 block2 = "=0.6.2"
 webkit2gtk = "=2.0.2"
 webkit2gtk-sys = "=2.0.2"

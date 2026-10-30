@@ -4,6 +4,7 @@ use std::ptr;
 
 use super::{BlockRules, FfiError, Shortcut, SuspendOutcome, content_rules};
 use glib::translate::ToGlibPtr;
+use gtk::prelude::WidgetExt;
 use webkit2gtk::{UserContentManager, WebViewExt};
 use wry::{WebView, WebViewExtUnix};
 
@@ -132,5 +133,20 @@ pub(super) fn install_shortcuts(
     _on_shortcut: Box<dyn Fn(Shortcut)>,
 ) -> Result<(), FfiError> {
     // the app menu owns Linux shortcuts in M4
+    Ok(())
+}
+
+pub(super) fn go_back(webview: &WebView) -> Result<(), FfiError> {
+    webview.webview().go_back();
+    Ok(())
+}
+
+pub(super) fn go_forward(webview: &WebView) -> Result<(), FfiError> {
+    webview.webview().go_forward();
+    Ok(())
+}
+
+pub(super) fn focus(webview: &WebView) -> Result<(), FfiError> {
+    webview.webview().grab_focus();
     Ok(())
 }

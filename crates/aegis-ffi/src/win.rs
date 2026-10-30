@@ -6,7 +6,8 @@ use webview2_com::{
 };
 use windows::Win32::System::Com::IStream;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, VK_CONTROL, VK_L, VK_MENU, VK_SHIFT, VK_T,
+    GetKeyState, VK_CONTROL, VK_F5, VK_L, VK_LEFT, VK_LWIN, VK_MENU, VK_R, VK_RIGHT, VK_RWIN,
+    VK_SHIFT, VK_T, VK_TAB, VK_W,
 };
 use windows::core::{Interface, PWSTR, w};
 use wry::{WebView, WebViewExtWindows};
@@ -154,15 +155,24 @@ pub(super) fn install_shortcuts(
         let alt = unsafe { GetKeyState(VK_MENU.0 as i32) } < 0;
         // SAFETY: these key state reads occur synchronously on the UI thread.
         let shift = unsafe { GetKeyState(VK_SHIFT.0 as i32) } < 0;
-        if !ctrl || alt || shift {
+        // SAFETY: these key state reads occur synchronously on the UI thread.
+        let win = unsafe { GetKeyState(VK_LWIN.0 as i32) < 0 || GetKeyState(VK_RWIN.0 as i32) < 0 };
+        if win {
             return Ok(());
         }
         let mut key = 0;
         // SAFETY: WebView2 writes the virtual key to this valid output pointer.
         unsafe { args.VirtualKey(&mut key)? };
-        let shortcut = match key {
-            value if value == u32::from(VK_L.0) => Shortcut::CommandBar,
-            value if value == u32::from(VK_T.0) => Shortcut::NewTab,
+        let shortcut = match (key, ctrl, alt, shift) {
+            (key, true, false, false) if key == u32::from(VK_L.0) => Shortcut::CommandBar,
+            (key, true, false, false) if key == u32::from(VK_T.0) => Shortcut::NewTab,
+            (key, true, false, false) if key == u32::from(VK_W.0) => Shortcut::CloseTab,
+            (key, true, false, false) if key == u32::from(VK_TAB.0) => Shortcut::NextTab,
+            (key, true, false, true) if key == u32::from(VK_TAB.0) => Shortcut::PrevTab,
+            (key, true, false, false) if key == u32::from(VK_R.0) => Shortcut::Reload,
+            (key, false, false, false) if key == u32::from(VK_F5.0) => Shortcut::Reload,
+            (key, false, true, false) if key == u32::from(VK_LEFT.0) => Shortcut::Back,
+            (key, false, true, false) if key == u32::from(VK_RIGHT.0) => Shortcut::Forward,
             _ => return Ok(()),
         };
         // SAFETY: the event arguments are live for this synchronous callback.
@@ -175,4 +185,38 @@ pub(super) fn install_shortcuts(
     // SAFETY: WebView2 retains the handler until the controller is destroyed.
     unsafe { controller.add_AcceleratorKeyPressed(&handler, &mut _token) }.map_err(native_error)?;
     Ok(())
+}
+
+pub(super) fn go_back(webview: &WebView) -> Result<(), FfiError> {
+    let core = webview.webview();
+    let mut can_go_back = windows::core::BOOL::default();
+    // SAFETY: the interface belongs to this live webview and the output pointer is valid.
+    unsafe { core.CanGoBack(&mut can_go_back) }.map_err(native_error)?;
+    if can_go_back.as_bool() {
+        // SAFETY: the interface belongs to this live webview and history permits navigation.
+        unsafe { core.GoBack() }.map_err(native_error)?;
+    }
+    Ok(())
+}
+
+pub(super) fn go_forward(webview: &WebView) -> Result<(), FfiError> {
+    let core = webview.webview();
+    let mut can_go_forward = windows::core::BOOL::default();
+    // SAFETY: the interface belongs to this live webview and the output pointer is valid.
+    unsafe { core.CanGoForward(&mut can_go_forward) }.map_err(native_error)?;
+    if can_go_forward.as_bool() {
+        // SAFETY: the interface belongs to this live webview and history permits navigation.
+        unsafe { core.GoForward() }.map_err(native_error)?;
+    }
+    Ok(())
+}
+
+pub(super) fn focus(webview: &WebView) -> Result<(), FfiError> {
+    // SAFETY: the controller belongs to this live webview and the reason is a defined enum value.
+    unsafe {
+        webview
+            .controller()
+            .MoveFocus(COREWEBVIEW2_MOVE_FOCUS_REASON_PROGRAMMATIC)
+    }
+    .map_err(native_error)
 }

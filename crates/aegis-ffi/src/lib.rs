@@ -24,6 +24,12 @@ pub enum SuspendOutcome {
 pub enum Shortcut {
     CommandBar,
     NewTab,
+    CloseTab,
+    NextTab,
+    PrevTab,
+    Reload,
+    Back,
+    Forward,
 }
 
 /// error from a native hook
@@ -72,6 +78,21 @@ pub fn install_shortcuts(
     on_shortcut: Box<dyn Fn(Shortcut)>,
 ) -> Result<(), FfiError> {
     platform::install_shortcuts(webview, on_shortcut)
+}
+
+/// navigate backward when history permits
+pub fn go_back(webview: &WebView) -> Result<(), FfiError> {
+    platform::go_back(webview)
+}
+
+/// navigate forward when history permits
+pub fn go_forward(webview: &WebView) -> Result<(), FfiError> {
+    platform::go_forward(webview)
+}
+
+/// focus the native webview
+pub fn focus(webview: &WebView) -> Result<(), FfiError> {
+    platform::focus(webview)
 }
 
 #[cfg(target_os = "linux")]

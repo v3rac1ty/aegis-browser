@@ -120,8 +120,10 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 name = "aegis"
 version = "0.1.0"
 dependencies = [
+ "aegis-core",
  "aegis-engine",
  "aegis-ffi",
+ "aegis-ipc",
  "eframe",
  "gtk",
 ]
@@ -138,6 +140,7 @@ dependencies = [
 name = "aegis-engine"
 version = "0.1.0"
 dependencies = [
+ "aegis-ffi",
  "wry",
 ]
 
@@ -149,7 +152,9 @@ dependencies = [
  "gio-sys",
  "glib",
  "glib-sys",
+ "gtk",
  "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "objc2-web-kit",
  "webkit2gtk",
@@ -162,6 +167,9 @@ dependencies = [
 [[package]]
 name = "aegis-ipc"
 version = "0.1.0"
+dependencies = [
+ "url",
+]
 
 [[package]]
 name = "aegis-shield"

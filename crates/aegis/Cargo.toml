@@ -9,8 +9,10 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+aegis-core = { path = "../aegis-core" }
 aegis-engine = { path = "../aegis-engine" }
 aegis-ffi = { path = "../aegis-ffi" }
+aegis-ipc = { path = "../aegis-ipc" }
 eframe.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
