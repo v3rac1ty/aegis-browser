@@ -15,4 +15,8 @@ pub mod settings;
 pub use command::{Command, CommandError, Effect, Location, Placement};
 pub use ids::{GroupId, TabId, WorkspaceId};
 pub use model::{Browser, Group, GroupColor, InvariantError, Item, LoadState, Tab, Workspace};
-pub use settings::{Layout, SearchEngine, Settings};
+pub use settings::{
+    Accent, CloseButton, Corners, Density, FrameLimit, Glass, Layout, MotionPref, PinnedStyle,
+    SearchEngine, SectionKind, SectionSlot, Settings, Setup, Side, SpacesStyle, TabIcons, TabLabel,
+    ThemeMode,
+};

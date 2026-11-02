@@ -3,19 +3,24 @@ use std::time::{Duration, Instant};
 use aegis_core::Browser;
 use eframe::egui;
 
+use crate::motion::Motion;
 use crate::sidebar::{Action, Sidebar};
 use crate::theme;
 
 pub struct Compact {
     open: bool,
     left_at: Option<Instant>,
+    motion: Motion,
 }
 
 impl Compact {
     pub fn new() -> Self {
+        let mut motion = Motion::new();
+        motion.seed(egui::Id::unique("hover_sidebar_animation"), 0.0);
         Self {
             open: false,
             left_at: None,
+            motion,
         }
     }
 
@@ -48,24 +53,46 @@ impl Compact {
         browser: &Browser,
         loading: bool,
         notice: Option<&str>,
+        blocked: u32,
+        right: bool,
+        sidebar_width: f32,
     ) -> Vec<Action> {
-        let progress = ctx.animate_bool_with_time_and_easing(
+        let dt = self.motion.frame();
+        let progress = self.motion.value(
+            ctx,
             egui::Id::unique("hover_sidebar_animation"),
-            self.open,
-            0.16,
-            egui::emath::easing::cubic_out,
+            if self.open { 1.0 } else { 0.0 },
+            0.34,
+            dt,
+            browser.settings().motion,
         );
-        let width = (theme::SIDEBAR_WIDTH * progress)
-            .min((window.width() - theme::HOT_STRIP_WIDTH).max(0.0));
-        if width <= 0.0 {
+        ctx.tessellation_options_mut(|options| {
+            let rounded = progress <= 0.0 || progress >= 1.0;
+            options.round_text_to_pixels = rounded;
+            options.round_rects_to_pixels = rounded;
+            options.round_line_segments_to_pixels = rounded;
+        });
+        let pane_width = (sidebar_width - 16.0)
+            .min(window.width() - theme::HOT_STRIP_WIDTH - 16.0)
+            .max(0.0);
+        let pane_height = (window.height() - 16.0).max(0.0);
+        if progress <= 0.0 || pane_width <= 0.0 || pane_height <= 0.0 {
             return Vec::new();
         }
+        let visible_width = (pane_width * progress).max(1.0);
         let builder = egui::ViewportBuilder::default()
+            .with_icon(crate::logo::icon())
             .with_position(egui::pos2(
-                window.min.x + theme::HOT_STRIP_WIDTH,
-                window.min.y,
+                if right {
+                    window.max.x - theme::HOT_STRIP_WIDTH - 8.0 - visible_width
+                } else {
+                    window.min.x + theme::HOT_STRIP_WIDTH + 8.0
+                },
+                window.min.y + 8.0,
             ))
-            .with_inner_size([width, window.height()])
+            .with_inner_size([visible_width, pane_height])
+            .with_transparent(true)
+            .with_has_shadow(false)
             .with_decorations(false)
             .with_resizable(false)
             .with_taskbar(false)
@@ -77,22 +104,27 @@ impl Compact {
             |ui, _| {
                 let mut actions = Vec::new();
                 egui::CentralPanel::default()
-                    .frame(egui::Frame::NONE.fill(theme::palette(ui.ctx()).background))
+                    .frame(egui::Frame::NONE)
                     .show(ui, |ui| {
                         let visible = ui.max_rect();
                         let contents = egui::Rect::from_min_size(
                             egui::pos2(
-                                visible.right() - theme::SIDEBAR_WIDTH + theme::PADDING,
-                                visible.top() + theme::PADDING,
+                                if right {
+                                    visible.left()
+                                } else {
+                                    visible.right() - pane_width
+                                },
+                                visible.top(),
                             ),
-                            egui::vec2(
-                                theme::SIDEBAR_WIDTH - 2.0 * theme::PADDING,
-                                visible.height() - 2.0 * theme::PADDING,
-                            ),
+                            egui::vec2(pane_width, visible.height()),
                         );
-                        ui.scope_builder(egui::UiBuilder::new().max_rect(contents), |ui| {
-                            actions = sidebar.show(ui, browser, loading, notice);
-                        });
+                        let contents = crate::widgets::non_negative(contents);
+                        if contents.width() >= 1.0 && contents.height() >= 1.0 {
+                            ui.scope_builder(egui::UiBuilder::new().max_rect(contents), |ui| {
+                                actions =
+                                    sidebar.show(ui, browser, loading, notice, blocked, right);
+                            });
+                        }
                     });
                 (
                     ui.input(|input| input.pointer.hover_pos().is_some()),

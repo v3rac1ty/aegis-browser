@@ -1,0 +1,14 @@
+{
+  "roots": {
+    "bookmark_bar": {"type":"folder","name":"Bar\u202e title","children":[
+      {"type":"url","name":"A\u200b B","url":"https://example.com/a"},
+      {"type":"url","name":"Bad","url":"javascript:alert(1)"},
+      {"type":"folder","name":"Work","children":[
+        {"type":"url","name":"Nested","url":"https://example.org/"},
+        {"type":"url","name":"Invalid","url":"not a url"}
+      ]}
+    ]},
+    "other": {"type":"folder","name":"Other","children":[]},
+    "synced": {"type":"folder","name":"Mobile","children":[]}
+  }
+}

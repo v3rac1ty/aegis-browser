@@ -10,3 +10,4 @@ workspace = true
 
 [dependencies]
 url.workspace = true
+png.workspace = true

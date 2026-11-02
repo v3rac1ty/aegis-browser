@@ -1,5 +1,7 @@
 use super::Shortcut;
 
+// each platform only builds the keys it can produce
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Key {
     L,
@@ -7,6 +9,7 @@ pub(super) enum Key {
     W,
     R,
     S,
+    Comma,
     Tab,
     F5,
     Left,
@@ -23,8 +26,11 @@ pub(super) struct Mods {
     pub command: bool,
 }
 
+// each platform only builds its own variant
+#[allow(dead_code)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Platform {
+    Windows,
     MacOS,
     Linux,
 }
@@ -35,27 +41,32 @@ pub(super) fn match_shortcut(key: Key, mods: Mods, platform: Platform) -> Option
     use Shortcut::*;
 
     match (platform, key, mods.ctrl, mods.shift, mods.alt, mods.command) {
-        (MacOS, L, false, false, false, true) | (Linux, L, true, false, false, false) => {
+        (MacOS, L, false, false, false, true) | (Windows | Linux, L, true, false, false, false) => {
             Some(CommandBar)
         }
-        (MacOS, T, false, false, false, true) | (Linux, T, true, false, false, false) => {
+        (MacOS, L, false, true, false, true) | (Windows | Linux, L, true, true, false, false) => {
+            Some(LockVault)
+        }
+        (MacOS, Comma, false, false, false, true)
+        | (Windows | Linux, Comma, true, false, false, false) => Some(Settings),
+        (MacOS, T, false, false, false, true) | (Windows | Linux, T, true, false, false, false) => {
             Some(NewTab)
         }
-        (MacOS, W, false, false, false, true) | (Linux, W, true, false, false, false) => {
+        (MacOS, W, false, false, false, true) | (Windows | Linux, W, true, false, false, false) => {
             Some(CloseTab)
         }
-        (MacOS, S, false, true, false, true) | (Linux, S, true, true, false, false) => {
+        (MacOS, S, false, true, false, true) | (Windows | Linux, S, true, true, false, false) => {
             Some(ToggleCompact)
         }
         (_, Tab, true, false, false, false) => Some(NextTab),
         (_, Tab, true, true, false, false) => Some(PrevTab),
         (MacOS, R, false, false, false, true)
-        | (Linux, R, true, false, false, false)
-        | (Linux, F5, false, false, false, false) => Some(Reload),
+        | (Windows | Linux, R, true, false, false, false)
+        | (Windows | Linux, F5, false, false, false, false) => Some(Reload),
         (MacOS, LeftBracket, false, false, false, true)
-        | (Linux, Left, false, false, true, false) => Some(Back),
+        | (Windows | Linux, Left, false, false, true, false) => Some(Back),
         (MacOS, RightBracket, false, false, false, true)
-        | (Linux, Right, false, false, true, false) => Some(Forward),
+        | (Windows | Linux, Right, false, false, true, false) => Some(Forward),
         _ => None,
     }
 }
@@ -86,6 +97,8 @@ mod tests {
         };
         for (key, mods, expected) in [
             (Key::L, command, Shortcut::CommandBar),
+            (Key::L, command_shift, Shortcut::LockVault),
+            (Key::Comma, command, Shortcut::Settings),
             (Key::T, command, Shortcut::NewTab),
             (Key::W, command, Shortcut::CloseTab),
             (Key::S, command_shift, Shortcut::ToggleCompact),
@@ -117,6 +130,8 @@ mod tests {
         };
         for (key, mods, expected) in [
             (Key::L, control, Shortcut::CommandBar),
+            (Key::L, control_shift, Shortcut::LockVault),
+            (Key::Comma, control, Shortcut::Settings),
             (Key::T, control, Shortcut::NewTab),
             (Key::W, control, Shortcut::CloseTab),
             (Key::S, control_shift, Shortcut::ToggleCompact),
@@ -130,6 +145,22 @@ mod tests {
             assert_eq!(match_shortcut(key, mods, Platform::Linux), Some(expected));
         }
         assert_eq!(match_shortcut(Key::S, control, Platform::Linux), None);
+    }
+
+    #[test]
+    fn windows_settings_shortcut() {
+        let control = Mods {
+            ctrl: true,
+            ..Mods::default()
+        };
+        assert_eq!(
+            match_shortcut(Key::Comma, control, Platform::Windows),
+            Some(Shortcut::Settings)
+        );
+        assert_eq!(
+            match_shortcut(Key::Comma, Mods::default(), Platform::Windows),
+            None
+        );
     }
 
     #[test]

@@ -3,7 +3,7 @@ use std::fmt;
 
 use crate::ids::{GroupId, TabId, WorkspaceId};
 use crate::model::{Browser, Group, GroupColor, Item, LoadState, Tab, Workspace};
-use crate::settings::{Layout, Settings};
+use crate::settings::{Layout, Settings, Setup};
 
 /// placement for a newly opened tab
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -82,6 +82,8 @@ pub enum Command {
     RemoveWorkspace(WorkspaceId),
     /// replace preferences after normalizing timeouts
     SetSettings(Settings),
+    /// apply a built-in sidebar setup
+    ApplySetup(Setup),
     /// change only the view layout
     SetLayout(Layout),
     /// change only compact mode
@@ -234,12 +236,18 @@ impl Browser {
                 self.settings = settings.normalized();
                 Ok(())
             }
+            Command::ApplySetup(setup) => {
+                self.settings.apply_setup(setup);
+                Ok(())
+            }
             Command::SetLayout(layout) => {
                 self.settings.layout = layout;
+                self.settings.setup = Setup::Custom;
                 Ok(())
             }
             Command::SetCompact(compact) => {
                 self.settings.compact = compact;
+                self.settings.setup = Setup::Custom;
                 Ok(())
             }
             Command::SetLoadState { tab, state } => {
@@ -284,7 +292,11 @@ impl Browser {
                 url: url.clone(),
                 title: String::new(),
                 last_active_ms: 0,
-                history: vec![url],
+                history: if url == "about:blank" {
+                    Vec::new()
+                } else {
+                    vec![url]
+                },
                 load: LoadState::Unloaded,
             },
         );
@@ -728,10 +740,29 @@ fn cap_name(value: &str) -> String {
     cap_chars(value.trim(), 64)
 }
 
+// the blank page and repeats of the last entry are not history
 fn push_history(tab: &mut Tab, url: &str) {
+    if url == "about:blank" || tab.history.last().is_some_and(|last| last == url) {
+        return;
+    }
     tab.history.push(url.to_owned());
     if tab.history.len() > 50 {
         tab.history.remove(0);
+    }
+}
+
+// drop blank pages and repeats from saved history
+pub(crate) fn clean_history(history: &mut Vec<String>) {
+    history.retain(|url| url != "about:blank");
+    history.dedup();
+}
+
+impl Browser {
+    /// clean every tab's saved history after loading a session
+    pub(crate) fn clean_all_history(&mut self) {
+        for tab in self.tabs.values_mut() {
+            clean_history(&mut tab.history);
+        }
     }
 }
 
@@ -1321,6 +1352,44 @@ mod tests {
             },
             CommandError::UnknownGroup,
         );
+    }
+
+    #[test]
+    fn blank_and_repeated_urls_are_not_recorded() {
+        let mut browser = Browser::new();
+        let tab = open(&mut browser, "https://a.test/", true);
+        for url in [
+            "about:blank",
+            "https://a.test/",
+            "https://b.test/",
+            "https://b.test/",
+            "about:blank",
+        ] {
+            browser
+                .apply(
+                    Command::SetUrl {
+                        tab,
+                        url: url.into(),
+                    },
+                    1,
+                )
+                .unwrap();
+        }
+        let data = browser.tab(tab).unwrap();
+        assert_eq!(data.history(), ["https://a.test/", "https://b.test/"]);
+        assert_eq!(data.url(), "about:blank");
+        browser
+            .apply(
+                Command::Navigate {
+                    tab,
+                    url: "about:blank".into(),
+                },
+                2,
+            )
+            .unwrap();
+        assert_eq!(browser.tab(tab).unwrap().history().len(), 2);
+        let blank = open(&mut browser, "about:blank", false);
+        assert!(browser.tab(blank).unwrap().history().is_empty());
     }
 
     #[test]

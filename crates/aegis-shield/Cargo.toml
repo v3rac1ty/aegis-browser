@@ -7,3 +7,9 @@ publish.workspace = true
 
 [lints]
 workspace = true
+
+[dependencies]
+adblock.workspace = true
+url.workspace = true
+serde.workspace = true
+serde_json.workspace = true

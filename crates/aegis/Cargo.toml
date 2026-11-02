@@ -13,7 +13,13 @@ aegis-core = { path = "../aegis-core" }
 aegis-engine = { path = "../aegis-engine" }
 aegis-ffi = { path = "../aegis-ffi" }
 aegis-ipc = { path = "../aegis-ipc" }
+aegis-shield = { path = "../aegis-shield" }
+aegis-vault = { path = "../aegis-vault" }
+aegis-import = { path = "../aegis-import" }
+arboard = { version = "=3.7.0", default-features = false }
 eframe.workspace = true
+serde_json.workspace = true
+zeroize.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk.workspace = true

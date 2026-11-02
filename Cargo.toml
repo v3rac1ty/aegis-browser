@@ -9,23 +9,34 @@ rust-version = "1.99"
 publish = false
 
 [workspace.dependencies]
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc", "getrandom"] }
+argon2 = { version = "0.5", default-features = false, features = ["alloc"] }
+zeroize = { version = "1", features = ["derive"] }
+getrandom = "0.3"
+csv = "1"
+plist = { version = "1", default-features = false }
+adblock = { version = "0.13.5", default-features = false, features = ["content-blocking", "embedded-domain-resolver"] }
 url = "2.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts", "accesskit", "x11", "wayland"] }
+png = "0.18.1"
+eframe = { version = "0.37.0", default-features = false, features = ["glow", "default_fonts", "accesskit", "clipboard", "x11", "wayland"] }
 winit = { version = "=0.30.13", default-features = false, features = ["x11"] }
 wry = { version = "0.57.1", default-features = false, features = ["os-webview", "x11"] }
 gtk = "=0.18.2"
 webview2-com = "=0.39.1"
-windows = { version = "=0.62.2", features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_System_Com", "Win32_Foundation"] }
+windows = { version = "=0.62.2", features = ["Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_UI_HiDpi", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_System_Com", "Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_Memory", "Security_Credentials_UI", "Win32_System_WinRT", "Foundation"] }
 objc2 = "=0.6.5"
-objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSError", "NSString"] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = ["std", "NSError", "NSString", "NSDictionary", "NSData", "NSValue", "NSObject"] }
 objc2-web-kit = { version = "=0.3.2", default-features = false, features = ["std", "block2", "WKContentRuleList", "WKContentRuleListStore", "WKUserContentController", "WKWebView", "WKNavigation"] }
-objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "block2", "NSEvent", "NSResponder", "NSView", "NSWindow"] }
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["std", "block2", "NSEvent", "NSResponder", "NSView", "NSWindow", "NSVisualEffectView", "NSWorkspace", "NSAccessibility"] }
+objc2-security = { version = "=0.3.2", default-features = false, features = ["std", "SecItem", "SecBase"] }
+objc2-local-authentication = { version = "=0.3.2", default-features = false, features = ["std", "block2", "LAContext"] }
 block2 = "=0.6.2"
-webkit2gtk = "=2.0.2"
+webkit2gtk = { version = "=2.0.2", features = ["v2_16"] }
 webkit2gtk-sys = "=2.0.2"
 glib = "=0.18.5"
+libsecret = { version = "=0.4.0", default-features = false }
 glib-sys = "=0.18.1"
 gio-sys = "=0.18.1"
 
@@ -39,6 +50,12 @@ unwrap_used = "warn"
 expect_used = "warn"
 dbg_macro = "deny"
 todo = "deny"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
 
 [profile.release]
 lto = "thin"

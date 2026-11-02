@@ -10,6 +10,9 @@ workspace = true
 
 [dependencies]
 wry.workspace = true
+aegis-vault = { path = "../aegis-vault" }
+zeroize.workspace = true
+getrandom.workspace = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
 webview2-com.workspace = true
@@ -21,6 +24,8 @@ objc2.workspace = true
 objc2-foundation.workspace = true
 objc2-web-kit.workspace = true
 block2.workspace = true
+objc2-security.workspace = true
+objc2-local-authentication.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk.workspace = true
@@ -29,3 +34,4 @@ webkit2gtk-sys.workspace = true
 glib.workspace = true
 glib-sys.workspace = true
 gio-sys.workspace = true
+libsecret.workspace = true

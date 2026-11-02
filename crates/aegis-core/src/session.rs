@@ -178,11 +178,10 @@ fn load_one(path: &Path) -> Result<Browser, SessionError> {
         return Err(SessionError::UnsupportedVersion(header.version));
     }
     let session: SessionFile = serde_json::from_slice(&bytes).map_err(SessionError::Parse)?;
-    session
-        .browser
-        .check_invariants()
-        .map_err(SessionError::Corrupt)?;
-    Ok(session.browser)
+    let mut browser = session.browser;
+    browser.check_invariants().map_err(SessionError::Corrupt)?;
+    browser.clean_all_history();
+    Ok(browser)
 }
 
 fn suffixed(path: &Path, suffix: &str) -> PathBuf {
@@ -280,6 +279,46 @@ mod tests {
         let loaded = load(&path).unwrap();
         assert_eq!(loaded.browser.tab(popup).unwrap().opener(), None);
         assert_eq!(loaded.browser.check_invariants(), Ok(()));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn old_sessions_load_with_clean_history() {
+        let dir = test_dir();
+        let path = dir.join("session.json");
+        let mut browser = Browser::new();
+        browser
+            .apply(
+                Command::OpenTab {
+                    url: "https://example.com/".into(),
+                    placement: Placement::End,
+                    activate: true,
+                    opener: None,
+                },
+                1,
+            )
+            .unwrap();
+        let tab = browser.active_tab().unwrap();
+        save(&path, &browser).unwrap();
+
+        let mut old_session: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        let history = [
+            "https://example.com/",
+            "about:blank",
+            "https://example.com/",
+            "about:blank",
+            "https://example.com/",
+            "https://other.test/",
+        ];
+        old_session["browser"]["tabs"][tab.get().to_string()]["history"] =
+            serde_json::json!(history);
+        fs::write(&path, serde_json::to_vec(&old_session).unwrap()).unwrap();
+        let loaded = load(&path).unwrap();
+        assert_eq!(
+            loaded.browser.tab(tab).unwrap().history(),
+            ["https://example.com/", "https://other.test/"]
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -455,6 +494,22 @@ mod tests {
                 ..
             })
         ));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn apply_setup_survives_session_save_load() {
+        use crate::{Command, Effect, Setup};
+
+        let dir = test_dir();
+        let path = dir.join("session.json");
+        let mut browser = Browser::new();
+        let effects = browser.apply(Command::ApplySetup(Setup::Power), 0).unwrap();
+        assert!(effects.contains(&Effect::PersistSession));
+        save(&path, &browser).unwrap();
+        let loaded = load(&path).unwrap();
+        assert_eq!(loaded.browser.settings(), browser.settings());
+        assert_eq!(loaded.browser.settings().setup, Setup::Power);
         fs::remove_dir_all(dir).unwrap();
     }
 }

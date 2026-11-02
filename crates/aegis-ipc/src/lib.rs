@@ -5,6 +5,135 @@ use std::collections::HashMap;
 use std::fmt;
 use url::Url;
 
+const FAVICON_PIXELS: usize = 32 * 32 * 4;
+const MAX_FAVICON_BYTES: usize = 1024 * 1024;
+
+/// a validated 32 by 32 site icon
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Favicon {
+    pub rgba: Box<[u8; FAVICON_PIXELS]>,
+}
+
+/// a reason site icon input was rejected
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FaviconError {
+    TooLarge,
+    Invalid,
+}
+
+impl fmt::Display for FaviconError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TooLarge => f.write_str("site icon is too large"),
+            Self::Invalid => f.write_str("invalid PNG site icon"),
+        }
+    }
+}
+
+/// decode an untrusted PNG site icon into small RGBA pixels
+pub fn decode_favicon(bytes: &[u8]) -> Result<Favicon, FaviconError> {
+    if bytes.len() > MAX_FAVICON_BYTES {
+        return Err(FaviconError::TooLarge);
+    }
+    if bytes.len() < 24 || &bytes[..8] != b"\x89PNG\r\n\x1a\n" || &bytes[12..16] != b"IHDR" {
+        return Err(FaviconError::Invalid);
+    }
+    let width = u32::from_be_bytes(
+        bytes[16..20]
+            .try_into()
+            .map_err(|_| FaviconError::Invalid)?,
+    );
+    let height = u32::from_be_bytes(
+        bytes[20..24]
+            .try_into()
+            .map_err(|_| FaviconError::Invalid)?,
+    );
+    if width == 0 || height == 0 || width > 512 || height > 512 {
+        return Err(FaviconError::TooLarge);
+    }
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut reader = decoder.read_info().map_err(|_| FaviconError::Invalid)?;
+    let size = reader.output_buffer_size().ok_or(FaviconError::Invalid)?;
+    if size > 512 * 512 * 4 {
+        return Err(FaviconError::TooLarge);
+    }
+    let mut pixels = vec![0; size];
+    let info = reader
+        .next_frame(&mut pixels)
+        .map_err(|_| FaviconError::Invalid)?;
+    reader.finish().map_err(|_| FaviconError::Invalid)?;
+    if info.width != width || info.height != height {
+        return Err(FaviconError::Invalid);
+    }
+    let rgba = match info.color_type {
+        png::ColorType::Rgba => pixels[..info.buffer_size()].to_vec(),
+        png::ColorType::Rgb => pixels[..info.buffer_size()]
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .flat_map(|pixel| [pixel[0], pixel[1], pixel[2], 255])
+            .collect(),
+        png::ColorType::GrayscaleAlpha => pixels[..info.buffer_size()]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .flat_map(|pixel| [pixel[0], pixel[0], pixel[0], pixel[1]])
+            .collect(),
+        png::ColorType::Grayscale => pixels[..info.buffer_size()]
+            .iter()
+            .flat_map(|value| [*value, *value, *value, 255])
+            .collect(),
+        png::ColorType::Indexed => return Err(FaviconError::Invalid),
+    };
+    downscale_favicon(&rgba, width as usize, height as usize)
+}
+
+/// downscale validated RGBA pixels with alpha weighted box averaging
+pub fn downscale_favicon(
+    rgba: &[u8],
+    width: usize,
+    height: usize,
+) -> Result<Favicon, FaviconError> {
+    if width == 0 || height == 0 || width > 512 || height > 512 || rgba.len() != width * height * 4
+    {
+        return Err(FaviconError::Invalid);
+    }
+    let mut output = Box::new([0; FAVICON_PIXELS]);
+    for y in 0..32 {
+        let top = y as f64 * height as f64 / 32.0;
+        let bottom = (y + 1) as f64 * height as f64 / 32.0;
+        for x in 0..32 {
+            let left = x as f64 * width as f64 / 32.0;
+            let right = (x + 1) as f64 * width as f64 / 32.0;
+            let mut alpha = 0.0;
+            let mut color = [0.0; 3];
+            for sy in top.floor() as usize..(bottom.ceil() as usize).min(height) {
+                let wy = (bottom.min((sy + 1) as f64) - top.max(sy as f64)).max(0.0);
+                for sx in left.floor() as usize..(right.ceil() as usize).min(width) {
+                    let wx = (right.min((sx + 1) as f64) - left.max(sx as f64)).max(0.0);
+                    let weight = wx * wy;
+                    let at = (sy * width + sx) * 4;
+                    let a = f64::from(rgba[at + 3]) * weight;
+                    alpha += a;
+                    for channel in 0..3 {
+                        color[channel] += f64::from(rgba[at + channel]) * a;
+                    }
+                }
+            }
+            let area = (right - left) * (bottom - top);
+            let at = (y * 32 + x) * 4;
+            output[at + 3] = (alpha / area).round().clamp(0.0, 255.0) as u8;
+            if alpha > 0.0 {
+                for channel in 0..3 {
+                    output[at + channel] = (color[channel] / alpha).round().clamp(0.0, 255.0) as u8;
+                }
+            }
+        }
+    }
+    Ok(Favicon { rgba: output })
+}
+
 const MAX_TITLE_CHARS: usize = 512;
 const MAX_URL_BYTES: usize = 8192;
 const POPUP_WINDOW_MS: u64 = 10_000;
@@ -168,6 +297,69 @@ impl PopupLimiter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn png_rgba(width: u32, height: u32, pixels: &[u8]) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut bytes, width, height);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let Ok(mut writer) = encoder.write_header() else {
+                panic!("PNG header")
+            };
+            assert!(writer.write_image_data(pixels).is_ok());
+        }
+        bytes
+    }
+
+    #[test]
+    fn favicon_decoder_table() {
+        let valid = png_rgba(1, 1, &[12, 34, 56, 255]);
+        let mut huge_header = valid.clone();
+        huge_header[16..20].copy_from_slice(&513u32.to_be_bytes());
+        let huge_input = vec![0; 1024 * 1024 + 1];
+        let cases = [
+            (&valid[..], true),
+            (&valid[..valid.len() - 3], false),
+            (&huge_header[..], false),
+            (&b"garbage"[..], false),
+            (&huge_input[..], false),
+        ];
+        for (bytes, accepted) in cases {
+            assert_eq!(decode_favicon(bytes).is_ok(), accepted);
+        }
+        let Ok(decoded) = decode_favicon(&valid) else {
+            panic!("valid PNG")
+        };
+        assert_eq!(decoded.rgba[..4], [12, 34, 56, 255]);
+        assert_eq!(decode_favicon(&huge_header), Err(FaviconError::TooLarge));
+    }
+
+    #[test]
+    fn favicon_box_filter_preserves_solid_and_alpha_edges() {
+        let solid = [10, 20, 30, 128].repeat(64 * 64);
+        let Ok(icon) = downscale_favicon(&solid, 64, 64) else {
+            panic!("solid icon")
+        };
+        assert!(
+            icon.rgba
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|pixel| *pixel == [10, 20, 30, 128])
+        );
+        let edge = [255, 0, 0, 255, 0, 0, 255, 0].repeat(32 * 32);
+        let Ok(icon) = downscale_favicon(&edge, 64, 32) else {
+            panic!("alpha edge")
+        };
+        assert!(
+            icon.rgba
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .all(|pixel| *pixel == [255, 0, 0, 128])
+        );
+    }
 
     #[test]
     fn sanitizes_titles() {

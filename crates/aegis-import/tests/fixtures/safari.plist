@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>Children</key><array>
+<dict><key>WebBookmarkType</key><string>WebBookmarkTypeList</string><key>Title</key><string>Favorites</string><key>Children</key><array>
+<dict><key>WebBookmarkType</key><string>WebBookmarkTypeLeaf</string><key>URLString</key><string>https://example.com/</string><key>URIDictionary</key><dict><key>title</key><string>Safe&#x202E; title</string></dict></dict>
+<dict><key>WebBookmarkType</key><string>WebBookmarkTypeLeaf</string><key>URLString</key><string>javascript:alert(1)</string><key>URIDictionary</key><dict><key>title</key><string>Bad</string></dict></dict>
+<dict><key>WebBookmarkType</key><string>WebBookmarkTypeList</string><key>Title</key><string>Nested</string><key>Children</key><array>
+<dict><key>WebBookmarkType</key><string>WebBookmarkTypeLeaf</string><key>URLString</key><string>https://example.org/</string><key>URIDictionary</key><dict><key>title</key><string>Child</string></dict></dict>
+</array></dict>
+</array></dict>
+<dict><key>WebBookmarkType</key><string>WebBookmarkTypeList</string><key>Title</key><string>com.apple.ReadingList</string><key>Children</key><array></array></dict>
+</array></dict></plist>

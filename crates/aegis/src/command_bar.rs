@@ -1,10 +1,11 @@
 use std::time::{Duration, Instant};
 
 use aegis_core::{Browser, SearchEngine, TabId};
-use eframe::egui::{self, Color32, FontId, Stroke};
+use eframe::egui::{self, FontId, Stroke};
 
+use crate::icons;
 use crate::matcher::{self, TabCandidate};
-use crate::sidebar::avatar;
+use crate::motion::Motion;
 use crate::theme;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -263,6 +264,7 @@ pub struct CommandBar {
     opened_at: Instant,
     focused_frames: u8,
     selection: Selection,
+    motion: Motion,
 }
 
 impl CommandBar {
@@ -273,6 +275,7 @@ impl CommandBar {
             opened_at: Instant::now(),
             focused_frames: 0,
             selection: Selection::default(),
+            motion: Motion::new(),
         }
     }
 
@@ -286,6 +289,7 @@ impl CommandBar {
         self.opened_at = Instant::now();
         self.focused_frames = 0;
         self.selection.reset();
+        self.motion.seed(egui::Id::unique("command_open"), 0.0);
     }
 
     pub fn show(
@@ -298,15 +302,27 @@ impl CommandBar {
         let mode = self.mode?;
         let entries = TabEntry::from_browser(browser);
         let mut rows = suggestions(&self.text, mode, browser.settings().search_engine, &entries);
-        let width = 640.0_f32.min((content.width() - 48.0).max(1.0));
-        let height = 44.0 + 36.0 * rows.len() as f32 + 2.0;
+        let dt = self.motion.frame();
+        let progress = self.motion.value(
+            ctx,
+            egui::Id::unique("command_open"),
+            1.0,
+            0.22,
+            dt,
+            browser.settings().motion,
+        );
+        let width = (600.0 * (0.98 + 0.02 * progress)).min((content.width() - 48.0).max(1.0));
+        let height = 54.0 + 40.0 * rows.len() as f32 + 2.0;
         let position = egui::pos2(
             window.min.x + content.center().x - width / 2.0,
             window.min.y + content.min.y + 72.0,
         );
         let builder = egui::ViewportBuilder::default()
+            .with_icon(crate::logo::icon())
             .with_position(position)
             .with_inner_size([width, height])
+            .with_transparent(cfg!(any(target_os = "windows", target_os = "macos")))
+            .with_has_shadow(false)
             .with_decorations(false)
             .with_resizable(false)
             .with_taskbar(false)
@@ -316,26 +332,46 @@ impl CommandBar {
             egui::ViewportId::from_hash_of("command_bar"),
             builder,
             |ui, _| {
-                let palette = theme::palette(ui.ctx());
+                let appearance = theme::resolve(
+                    browser.settings(),
+                    ui.ctx().system_theme() == Some(egui::Theme::Dark),
+                );
+                let palette = appearance.palette;
                 let mut clicked = None;
                 egui::CentralPanel::default()
                     .frame(egui::Frame::NONE)
                     .show(ui, |ui| {
+                        ui.set_opacity(progress);
                         egui::Frame::NONE
-                            .fill(palette.background)
-                            .corner_radius(12.0)
-                            .stroke(Stroke::new(1.0, palette.border))
+                            .fill(palette.overlay)
+                            .corner_radius(appearance.metrics.overlay_radius)
+                            .stroke(Stroke::new(theme::hairline(ui.ctx()), palette.pane_edge))
                             .show(ui, |ui| {
                                 ui.set_width(width - 2.0);
                                 ui.horizontal(|ui| {
-                                    ui.set_min_height(33.0);
+                                    ui.set_min_height(54.0);
                                     ui.add_space(12.0);
+                                    let icon_rect = egui::Rect::from_min_size(
+                                        ui.cursor().min + egui::vec2(0.0, 17.0),
+                                        egui::vec2(20.0, 20.0),
+                                    );
+                                    icons::search(ui.painter(), icon_rect, appearance.accent);
+                                    ui.add_space(20.0);
                                     let output = egui::TextEdit::singleline(&mut self.text)
                                         .hint_text("Enter URL or search")
-                                        .font(FontId::proportional(15.0))
+                                        .font(FontId::proportional(
+                                            17.0 * f32::from(browser.settings().text_scale) / 100.0,
+                                        ))
                                         .frame(egui::Frame::NONE)
-                                        .desired_width(width - 28.0)
+                                        .desired_width(width - 64.0)
                                         .show(ui);
+                                    crate::icons::focus_ring(
+                                        ui,
+                                        &output.response,
+                                        output.response.rect.expand(2.0),
+                                        appearance.accent,
+                                        appearance.metrics.control_radius,
+                                    );
                                     if self.focused_frames == 0 {
                                         output.response.request_focus();
                                         if mode == Mode::CurrentTab {
@@ -358,17 +394,17 @@ impl CommandBar {
                                         );
                                     }
                                 });
-                                ui.add_space(10.0);
+                                ui.add_space(0.0);
                                 let separator = ui.allocate_space(egui::vec2(width - 2.0, 1.0)).1;
                                 ui.painter().line_segment(
                                     [separator.left_top(), separator.right_top()],
-                                    Stroke::new(1.0, palette.separator),
+                                    Stroke::new(theme::hairline(ui.ctx()), palette.hairline),
                                 );
                                 let pointer_moved =
                                     ui.input(|input| input.pointer.delta().length_sq() > 0.0);
                                 for (index, row) in rows.iter().enumerate() {
                                     let (rect, response) = ui.allocate_exact_size(
-                                        egui::vec2(width - 2.0, 36.0),
+                                        egui::vec2(width - 2.0, 40.0),
                                         egui::Sense::click(),
                                     );
                                     if response.hovered() && pointer_moved {
@@ -377,47 +413,56 @@ impl CommandBar {
                                     if response.clicked() {
                                         clicked = Some(index);
                                     }
+                                    response.widget_info(|| {
+                                        egui::WidgetInfo::labeled(
+                                            egui::Role::Button,
+                                            true,
+                                            &row.title,
+                                        )
+                                    });
+                                    crate::icons::focus_ring(
+                                        ui,
+                                        &response,
+                                        rect,
+                                        appearance.accent,
+                                        appearance.metrics.row_radius + 1.0,
+                                    );
                                     if self.selection.index == index {
                                         ui.painter().rect_filled(
                                             rect.shrink2(egui::vec2(4.0, 1.0)),
-                                            6.0,
-                                            palette.active,
+                                            appearance.metrics.row_radius + 1.0,
+                                            palette.hover.gamma_multiply(if appearance.dark {
+                                                1.25
+                                            } else {
+                                                1.67
+                                            }),
                                         );
                                     }
                                     let avatar_rect = egui::Rect::from_min_size(
                                         rect.min + egui::vec2(12.0, 7.0),
                                         egui::vec2(22.0, 22.0),
                                     );
-                                    let (letter, color) = avatar(&row.avatar);
-                                    const COLORS: [Color32; 8] = [
-                                        Color32::from_rgb(101, 132, 184),
-                                        Color32::from_rgb(168, 112, 138),
-                                        Color32::from_rgb(106, 156, 130),
-                                        Color32::from_rgb(167, 137, 88),
-                                        Color32::from_rgb(130, 114, 174),
-                                        Color32::from_rgb(95, 151, 163),
-                                        Color32::from_rgb(171, 117, 100),
-                                        Color32::from_rgb(121, 143, 105),
-                                    ];
-                                    ui.painter().rect_filled(avatar_rect, 5.0, COLORS[color]);
-                                    ui.painter().text(
-                                        avatar_rect.center(),
-                                        egui::Align2::CENTER_CENTER,
-                                        letter,
-                                        FontId::proportional(12.0),
-                                        Color32::WHITE,
-                                    );
+                                    if browser.settings().tab_icons != aegis_core::TabIcons::Off {
+                                        crate::widgets::avatar(
+                                            ui,
+                                            avatar_rect,
+                                            &row.avatar,
+                                            appearance,
+                                            browser.settings().tab_icons
+                                                == aegis_core::TabIcons::Circles,
+                                        );
+                                    }
                                     let hint =
                                         if matches!(row.action, SuggestionAction::ActivateTab(_)) {
                                             "Switch to tab"
                                         } else {
-                                            "↵"
+                                            "Enter"
                                         };
                                     ui.painter().text(
                                         rect.right_center() - egui::vec2(12.0, 0.0),
                                         egui::Align2::RIGHT_CENTER,
                                         hint,
-                                        FontId::proportional(11.0),
+                                        crate::fonts::id(ui.ctx(), "Caption"),
                                         palette.secondary,
                                     );
                                     let text_rect = egui::Rect::from_min_max(
@@ -429,14 +474,14 @@ impl CommandBar {
                                         text_rect.min + egui::vec2(0.0, 1.0),
                                         egui::Align2::LEFT_TOP,
                                         &row.title,
-                                        FontId::proportional(12.0),
+                                        crate::fonts::id(ui.ctx(), "Label"),
                                         palette.text,
                                     );
                                     painter.text(
                                         text_rect.min + egui::vec2(0.0, 17.0),
                                         egui::Align2::LEFT_TOP,
                                         &row.secondary,
-                                        FontId::proportional(10.0),
+                                        crate::fonts::id(ui.ctx(), "Caption"),
                                         palette.secondary,
                                     );
                                 }
@@ -483,7 +528,6 @@ impl CommandBar {
                 egui::ViewportCommand::Focus,
             );
         }
-        ctx.request_repaint_of(egui::ViewportId::ROOT);
         None
     }
 }

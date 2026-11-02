@@ -2,15 +2,33 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 #![forbid(unsafe_code)]
 
+mod accent_picker;
 mod app;
 mod command_bar;
 mod compact;
+#[cfg(debug_assertions)]
+mod debug_shot;
+mod favicons;
+mod fonts;
+mod glass;
+mod icons;
+mod imports;
+mod logo;
 mod matcher;
+mod motion;
+mod passwords;
 mod paths;
 mod persist;
+mod preview;
+mod protections;
+mod security;
+mod settings_page;
 mod sidebar;
+mod tabstrip;
 mod theme;
 mod views;
+mod welcome;
+mod widgets;
 
 use std::error::Error;
 use std::fmt;
@@ -18,6 +36,19 @@ use std::path::{Path, PathBuf};
 
 use aegis_engine::Start;
 use eframe::egui;
+
+fn saved_vsync(data_dir: &Path) -> bool {
+    let Ok(bytes) = std::fs::read(data_dir.join("session.json")) else {
+        return false;
+    };
+    let Ok(session) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return false;
+    };
+    session
+        .pointer("/browser/settings/frame_limit")
+        .and_then(serde_json::Value::as_str)
+        == Some("Vsync")
+}
 
 #[derive(Debug)]
 enum StartupError {
@@ -99,6 +130,21 @@ fn parse_args(args: &[String], current_dir: &Path) -> Result<StartupOptions, Sta
     })
 }
 
+// debug size override, and an off-screen unfocused window when taking a screenshot
+#[cfg(debug_assertions)]
+fn debug_viewport(mut viewport: egui::ViewportBuilder) -> egui::ViewportBuilder {
+    if let Some(size) = std::env::var("AEGIS_DEBUG_SIZE")
+        .ok()
+        .and_then(|value| debug_shot::parse_size(&value))
+    {
+        viewport = viewport.with_inner_size(size);
+    }
+    if std::env::var_os("AEGIS_DEBUG_SHOT").is_some() {
+        viewport = viewport.with_position([-3000.0, 60.0]).with_active(false);
+    }
+    viewport
+}
+
 fn main() -> Result<(), StartupError> {
     let current_dir = std::env::current_dir()
         .map_err(|error| StartupError::Arguments(format!("current directory: {error}")))?;
@@ -112,11 +158,33 @@ fn main() -> Result<(), StartupError> {
         gtk::init().map_err(|error| StartupError::Gtk(error.to_string()))?;
     }
 
-    let options = eframe::NativeOptions {
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([1280.0, 800.0])
+        .with_icon(logo::icon());
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
+    {
+        viewport = viewport.with_transparent(true);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // eframe maps titlebar_shown(false) to winit's transparent titlebar
+        viewport = viewport
+            .with_decorations(true)
+            .with_fullsize_content_view(true)
+            .with_titlebar_shown(false)
+            .with_titlebar_buttons_shown(true)
+            .with_title_shown(false);
+    }
+    #[cfg(debug_assertions)]
+    {
+        viewport = debug_viewport(viewport);
+    }
+    let mut options = eframe::NativeOptions {
         renderer: eframe::Renderer::Glow,
-        viewport: egui::ViewportBuilder::default().with_inner_size([1280.0, 800.0]),
+        viewport,
         ..Default::default()
     };
+    options.glow_options.vsync = saved_vsync(&options_from_args.data_dir);
 
     #[cfg(target_os = "linux")]
     let options = {

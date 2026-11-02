@@ -35,6 +35,23 @@ pub(crate) fn build_json(substrings: &[String]) -> String {
     json
 }
 
+#[cfg_attr(target_os = "windows", allow(dead_code))]
+pub(crate) fn merge_json_lists(lists: Vec<String>) -> String {
+    let mut merged = String::from("[");
+    for list in lists {
+        let body = list.trim().trim_start_matches('[').trim_end_matches(']');
+        if body.trim().is_empty() {
+            continue;
+        }
+        if merged.len() > 1 {
+            merged.push(',');
+        }
+        merged.push_str(body);
+    }
+    merged.push(']');
+    merged
+}
+
 #[cfg(test)]
 mod tests {
     use super::build_json;
@@ -59,6 +76,18 @@ mod tests {
         assert_eq!(
             build_json(&rules),
             r#"[{"trigger":{"url-filter":"ads"},"action":{"type":"block"}}]"#
+        );
+    }
+
+    #[test]
+    fn merges_rule_arrays() {
+        assert_eq!(
+            super::merge_json_lists(vec![
+                "[]".into(),
+                "[{\"a\":1}]".into(),
+                "[{\"b\":2}]".into()
+            ]),
+            "[{\"a\":1},{\"b\":2}]"
         );
     }
 }
