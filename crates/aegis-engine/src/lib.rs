@@ -666,7 +666,7 @@ const MACOS_FAVICON_SCRIPT: &str = r#"(() => {
 
 #[cfg(target_os = "macos")]
 fn decode_favicon_base64(encoded: &str) -> Option<Vec<u8>> {
-    if encoded.len() > 1_398_104 || encoded.len() % 4 != 0 {
+    if encoded.len() > 1_398_104 || !encoded.len().is_multiple_of(4) {
         return None;
     }
     fn value(byte: u8) -> Option<u8> {
@@ -680,7 +680,7 @@ fn decode_favicon_base64(encoded: &str) -> Option<Vec<u8>> {
         }
     }
     let mut out = Vec::with_capacity(encoded.len() / 4 * 3);
-    for chunk in encoded.as_bytes().chunks_exact(4) {
+    for chunk in encoded.as_bytes().as_chunks::<4>().0 {
         let a = value(chunk[0])?;
         let b = value(chunk[1])?;
         let c = if chunk[2] == b'=' {

@@ -145,12 +145,12 @@ pub(super) fn verify_owner(
     let pending = Mutex::new(Some((done, retained)));
     let reply = RcBlock::new(
         move |success: Bool, _error: *mut objc2_foundation::NSError| {
-            if let Ok(mut pending) = pending.lock() {
-                if let Some((done, retained)) = pending.take() {
-                    // SAFETY: The retained context pointer is consumed exactly once by this completion block.
-                    unsafe { drop(Retained::<LAContext>::from_raw(retained as *mut LAContext)) };
-                    done(map_auth(success.into()));
-                }
+            if let Ok(mut pending) = pending.lock()
+                && let Some((done, retained)) = pending.take()
+            {
+                // SAFETY: The retained context pointer is consumed exactly once by this completion block.
+                unsafe { drop(Retained::<LAContext>::from_raw(retained as *mut LAContext)) };
+                done(map_auth(success.into()));
             }
         },
     );
