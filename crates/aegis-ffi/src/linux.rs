@@ -10,7 +10,7 @@ use super::{
     BlockRules, FfiError, NativeEvent, NativeFailReason, NativePermissionKind, Shortcut,
     SuspendOutcome, content_rules,
 };
-use glib::prelude::Cast;
+use glib::prelude::{Cast, ObjectExt};
 use glib::translate::ToGlibPtr;
 use gtk::cairo::{Format, ImageSurface};
 use gtk::gdk;
@@ -557,7 +557,7 @@ pub(super) fn set_page_corner_radius(_webview: &WebView, _radius: f64) -> Result
 }
 
 pub(super) fn reduce_motion() -> bool {
-    use gtk::prelude::SettingsExt;
+    use gtk::prelude::GtkSettingsExt;
 
     gtk::Settings::default().is_some_and(|settings| !settings.is_gtk_enable_animations())
 }
